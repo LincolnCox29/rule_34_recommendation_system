@@ -3,6 +3,8 @@ import random
 import requests
 from dotenv import load_dotenv
 import os
+from generic_tags import GENERIC_TAGS
+import math
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
@@ -23,21 +25,40 @@ fav = []
 
 AI_filter = False
 
-IGNORE_TAGS = {
-    "1girl",
-    "2girls",
-    "solo",
-    "smile",
-    "looking_at_viewer",
-    "rating_explicit"
-}
+def score_post(tags):
+    score = 0
+    max_neg = 0
+
+    for tag in tags:
+        w = like_tags.get(tag, 0)
+        score += w
+
+        if w < max_neg:
+            max_neg = w
+
+    if max_neg < -5:
+        return -999
+
+    return score / (len(tags) ** 0.5)
+
+def pick_top_tag(k=10):
+    top = sorted(like_tags.items(), key=lambda x: x[1], reverse=True)[:k]
+
+    if not top:
+        return None
+
+    tags, scores = zip(*top)
+
+    weights = [max(0.01, s) for s in scores]
+
+    return random.choices(tags, weights=weights, k=1)[0]
 
 def get_random_post():
 
     for i in range(5):
 
         if i == 4:
-            query = []
+            query = ""
         else:
             query = build_query()
 
@@ -51,7 +72,7 @@ def get_random_post():
             "s": "post",
             "q": "index",
             "json": 1,
-            "limit": 20,
+            "limit": 100,
             "pid": pid,
             "tags": query,
             "api_key": os.getenv("R34_API_KEY"),
@@ -76,7 +97,19 @@ def get_random_post():
             if not posts:
                 continue
 
-            return random.choice(posts)
+            best_post = None
+            for post in posts:
+                if post["id"] in posts_cache:
+                    continue
+
+                tags = post["tags"].split()
+                score = score_post(tags)
+
+                post["tags_score"] = score
+
+                if best_post == None or score > best_post["tags_score"]:
+                    best_post = post
+            return best_post
 
         except Exception as e:
             print(e)
@@ -104,21 +137,31 @@ def build_query():
 
         tags = list(positive_tags.keys())
 
-        weights = [
-            score ** 0.5
-            for score in positive_tags.values()
-        ]
-
         k = random.choices(
             [1, 2],
             weights=[85, 15]
         )[0]
 
+        top_tags = sorted(
+            positive_tags.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )[:20]
+
+        weights = [
+            score ** 0.5
+            for _, score in top_tags
+        ]
+
         selected_tags = random.choices(
-            tags,
+            [tag for tag, _ in top_tags],
             weights=weights,
             k=k
         )
+
+        extra_tag = pick_top_tag()
+        if extra_tag:
+            selected_tags.append(extra_tag)
 
         query.extend(set(selected_tags))
 
@@ -134,9 +177,6 @@ def build_query():
             for tag, _ in disliked[:2]
         )
 
-    if random.random() < 0.15:
-        query = []
-
     if AI_filter:
 
         query.extend([
@@ -147,6 +187,39 @@ def build_query():
         ])
 
     return " ".join(query)
+
+def print_top_tags(limit=50):
+
+    sorted_tags = sorted(
+        like_tags.items(),
+        key=lambda x: x[1],
+        reverse=True
+    )
+
+    print("\n=== TAG SCORES ===\n")
+
+    for i, (tag, score) in enumerate(sorted_tags[:limit], start=1):
+
+        print(
+            f"{i:02d}. "
+            f"{tag:<35} "
+            f"{score:.2f}"
+        )
+
+    print("\n=== MOST DISLIKED ===\n")
+
+    disliked = sorted(
+        like_tags.items(),
+        key=lambda x: x[1]
+    )
+
+    for i, (tag, score) in enumerate(disliked[:limit], start=1):
+
+        print(
+            f"{i:02d}. "
+            f"{tag:<35} "
+            f"{score:.2f}"
+        )
 
 # ===== Main Menu =====
 
@@ -283,6 +356,11 @@ async def open_feed(callback: CallbackQuery):
         return
     
     posts_cache[post["id"]] = post
+
+    if len(posts_cache) > 200:
+        oldest_key = next(iter(posts_cache))
+        del posts_cache[oldest_key] 
+
     image_url = (
         post.get("sample_url")
         or post.get("file_url")
@@ -321,17 +399,30 @@ async def like_post(callback: CallbackQuery):
     )
 
     post = posts_cache.get(int(post_id))
-    tags = post["tags"].split(" ")
+    tags = post["tags"].split()
 
     for tag in tags:
-        if tag in IGNORE_TAGS:
-            continue
-
         if tag not in like_tags:
             like_tags[tag] = 0
 
-        like_tags[tag] += 1
+        base = 1
 
+        if tag in GENERIC_TAGS:
+            base *= 0.15
+
+        if "_" in tag:
+            base *= 1.2
+
+        if "(" in tag:
+            base *= 1.5
+
+        preference = 1 + 0.6 * math.tanh(like_tags[tag] / 5)
+
+        factor = base * preference
+
+        like_tags[tag] += factor
+
+    print_top_tags()
     await callback.answer("Added to favorites")
 
 @dp.callback_query(F.data.startswith("dislike:"))
@@ -350,17 +441,30 @@ async def dislike_post(callback: CallbackQuery):
     )
 
     post = posts_cache.get(int(post_id))
-    tags = post["tags"].split(" ")
+    tags = post["tags"].split()
 
     for tag in tags:
-        if tag in IGNORE_TAGS:
-            continue
-
         if tag not in like_tags:
             like_tags[tag] = 0
 
-        like_tags[tag] -= 1 
+        base = 1
 
+        if tag in GENERIC_TAGS:
+            base *= 0.15
+
+        if "_" in tag:
+            base *= 1.2
+
+        if "(" in tag:
+            base *= 1.5
+
+        preference = 1 + 0.6 * math.tanh(-like_tags[tag] / 5)
+
+        factor = base * preference
+
+        like_tags[tag] -= factor
+
+    print_top_tags()
     await callback.answer("Less like this")
 
 # ===== Main =====
