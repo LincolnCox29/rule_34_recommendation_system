@@ -3,8 +3,8 @@ import random
 import requests
 from dotenv import load_dotenv
 import os
-from generic_tags import GENERIC_TAGS
 import math
+import json
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
@@ -25,13 +25,36 @@ fav = []
 
 AI_filter = False
 
+TAGS_POP = None
+def load_tags_pop():
+    global TAGS_POP
+    print(os.path.abspath("tags_pop.json"))
+    try:
+        with open("tags_pop.json", "r", encoding="utf-8") as file:
+            TAGS_POP = json.load(file)
+    except Exception as e:
+        print("tags JSON loading exception: ", e)
+load_tags_pop()
+
 def score_post(tags):
+
+    exploration_mod = random.choices(
+        [True, False],
+        weights=[15, 85]
+    )[0]
+
     score = 0
+    unknown_tags = 0
     max_neg = 0
 
     for tag in tags:
+
         w = like_tags.get(tag, 0)
+
         score += w
+
+        if tag not in like_tags:
+            unknown_tags += 1
 
         if w < max_neg:
             max_neg = w
@@ -39,7 +62,13 @@ def score_post(tags):
     if max_neg < -5:
         return -999
 
-    return score / (len(tags) ** 0.5)
+    score /= (len(tags) ** 0.5)
+
+    if exploration_mod:
+        unknown_ratio = unknown_tags / len(tags)
+        score += unknown_ratio * 2
+
+    return score
 
 def pick_top_tag(k=10):
     top = sorted(like_tags.items(), key=lambda x: x[1], reverse=True)[:k]
@@ -267,7 +296,7 @@ def feed_keyboard(post_id, liked=False, disliked=False):
             ],
             [
                 InlineKeyboardButton(
-                    text="🙈 Less like this",
+                    text="🙈 Less like this" if disliked else "🐵 Less like this",
                     callback_data=f"dislike:{1 if disliked else 0}:{post_id}"
                 ),
             ],
@@ -407,14 +436,17 @@ async def like_post(callback: CallbackQuery):
 
         base = 1
 
-        if tag in GENERIC_TAGS:
-            base *= 0.15
+        pop = TAGS_POP.get(tag, 1)
+        tag_rarity = 1 / (math.log10(pop + 10) ** 2)
+        tag_rarity = max(0.03, tag_rarity)
+
+        base *= tag_rarity
 
         if "_" in tag:
-            base *= 1.2
+            base *= 1.3
 
         if "(" in tag:
-            base *= 1.5
+            base *= 1.8
 
         preference = 1 + 0.6 * math.tanh(like_tags[tag] / 5)
 
@@ -449,14 +481,17 @@ async def dislike_post(callback: CallbackQuery):
 
         base = 1
 
-        if tag in GENERIC_TAGS:
-            base *= 0.15
+        pop = TAGS_POP.get(tag, 1)
+        tag_rarity = 1 / (math.log10(pop + 10) ** 2)
+        tag_rarity = max(0.03, tag_rarity)
+
+        base *= tag_rarity
 
         if "_" in tag:
-            base *= 1.2
+            base *= 1.3
 
         if "(" in tag:
-            base *= 1.5
+            base *= 1.8
 
         preference = 1 + 0.6 * math.tanh(-like_tags[tag] / 5)
 
