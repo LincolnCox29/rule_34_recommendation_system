@@ -31,7 +31,7 @@ def load_tags_pop():
         print("tags JSON loading exception: ", e)
 load_tags_pop()
 
-def score_post(user, tags):
+def score_post(user, tags, pop):
 
     exploration_mod = random.choices(
         [True, False],
@@ -54,10 +54,13 @@ def score_post(user, tags):
         if w < max_neg:
             max_neg = w
 
-    if max_neg < -5:
-        return -999
-
     score /= (len(tags) ** 0.5)
+
+    pop_factor = 1 + 0.15 * math.log10(pop + 10)
+    score *= pop_factor
+
+    tag_count_factor = min(1.0, len(tags) / 25)
+    score *= tag_count_factor
 
     if exploration_mod:
         unknown_ratio = unknown_tags / len(tags)
@@ -81,10 +84,8 @@ def get_random_post(user):
 
     for i in range(5):
 
-        if i == 4:
-            query = ""
-        else:
-            query = build_query(user)
+        query = build_query(user)
+        print("QUERY:", query)
 
         if len(query.split()) >= 3:
             pid = random.randint(0, 20)
@@ -123,11 +124,11 @@ def get_random_post(user):
 
             best_post = None
             for post in posts:
-                if post["id"] in user.posts_cache:
+                if str(post["id"]) in user.posts_cache:
                     continue
 
                 tags = post["tags"].split()
-                score = score_post(user, tags)
+                score = score_post(user, tags, post["score"])
 
                 post["tags_score"] = score
 
@@ -183,10 +184,6 @@ def build_query(user):
             k=k
         )
 
-        extra_tag = pick_top_tag(user)
-        if extra_tag:
-            selected_tags.append(extra_tag)
-
         query.extend(set(selected_tags))
 
     if negative_tags:
@@ -207,7 +204,8 @@ def build_query(user):
             "-ai_generated",
             "-stable_diffusion",
             "-midjourney",
-            "-novelai"
+            "-novelai",
+            "-ia_generated"
         ])
 
     return " ".join(query)
@@ -317,6 +315,8 @@ async def turn_AI_filter(callback: CallbackQuery):
         reply_markup=settings_menu(user)
     )
 
+    user.save_user_data()
+
     await callback.answer()
 
 def settings_menu(user):
@@ -373,7 +373,7 @@ async def open_feed(callback: CallbackQuery):
     if post == None:
         return
     
-    user.posts_cache[post["id"]] = post
+    user.posts_cache[str(post["id"])] = post
 
     if len(user.posts_cache) > 200:
         oldest_key = next(iter(user.posts_cache))
@@ -394,7 +394,7 @@ async def open_feed(callback: CallbackQuery):
     await callback.message.answer_photo(
         photo=image_url,
         caption= f"Score: {post['score']}\nTags: {formatted_tags}",
-        reply_markup=feed_keyboard(post["id"])
+        reply_markup=feed_keyboard(str(post["id"]))
     )
 
     user.save_user_data()
