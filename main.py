@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 import os
 import math
 import json
+from user import User
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
@@ -19,12 +20,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
-like_tags = {}
-posts_cache = {}
-fav = []
-
-AI_filter = False
-
 TAGS_POP = None
 def load_tags_pop():
     global TAGS_POP
@@ -36,7 +31,7 @@ def load_tags_pop():
         print("tags JSON loading exception: ", e)
 load_tags_pop()
 
-def score_post(tags):
+def score_post(user, tags):
 
     exploration_mod = random.choices(
         [True, False],
@@ -49,11 +44,11 @@ def score_post(tags):
 
     for tag in tags:
 
-        w = like_tags.get(tag, 0)
+        w = user.like_tags.get(tag, 0)
 
         score += w
 
-        if tag not in like_tags:
+        if tag not in user.like_tags:
             unknown_tags += 1
 
         if w < max_neg:
@@ -70,8 +65,8 @@ def score_post(tags):
 
     return score
 
-def pick_top_tag(k=10):
-    top = sorted(like_tags.items(), key=lambda x: x[1], reverse=True)[:k]
+def pick_top_tag(user, k=10):
+    top = sorted(user.like_tags.items(), key=lambda x: x[1], reverse=True)[:k]
 
     if not top:
         return None
@@ -82,14 +77,14 @@ def pick_top_tag(k=10):
 
     return random.choices(tags, weights=weights, k=1)[0]
 
-def get_random_post():
+def get_random_post(user):
 
     for i in range(5):
 
         if i == 4:
             query = ""
         else:
-            query = build_query()
+            query = build_query(user)
 
         if len(query.split()) >= 3:
             pid = random.randint(0, 20)
@@ -128,11 +123,11 @@ def get_random_post():
 
             best_post = None
             for post in posts:
-                if post["id"] in posts_cache:
+                if post["id"] in user.posts_cache:
                     continue
 
                 tags = post["tags"].split()
-                score = score_post(tags)
+                score = score_post(user, tags)
 
                 post["tags_score"] = score
 
@@ -146,19 +141,19 @@ def get_random_post():
 
     return None
 
-def build_query():
+def build_query(user):
 
     query = []
 
     positive_tags = {
         tag: score
-        for tag, score in like_tags.items()
+        for tag, score in user.like_tags.items()
         if score > 0
     }
 
     negative_tags = {
         tag: score
-        for tag, score in like_tags.items()
+        for tag, score in user.like_tags.items()
         if score < 0
     }
 
@@ -188,7 +183,7 @@ def build_query():
             k=k
         )
 
-        extra_tag = pick_top_tag()
+        extra_tag = pick_top_tag(user)
         if extra_tag:
             selected_tags.append(extra_tag)
 
@@ -206,7 +201,7 @@ def build_query():
             for tag, _ in disliked[:2]
         )
 
-    if AI_filter:
+    if user.config["ai_filter"]:
 
         query.extend([
             "-ai_generated",
@@ -217,10 +212,10 @@ def build_query():
 
     return " ".join(query)
 
-def print_top_tags(limit=50):
+def print_top_tags(user, limit=50):
 
     sorted_tags = sorted(
-        like_tags.items(),
+        user.like_tags.items(),
         key=lambda x: x[1],
         reverse=True
     )
@@ -238,7 +233,7 @@ def print_top_tags(limit=50):
     print("\n=== MOST DISLIKED ===\n")
 
     disliked = sorted(
-        like_tags.items(),
+        user.like_tags.items(),
         key=lambda x: x[1]
     )
 
@@ -314,23 +309,25 @@ def feed_keyboard(post_id, liked=False, disliked=False):
 @dp.callback_query(F.data == "turn_AI_filter")
 async def turn_AI_filter(callback: CallbackQuery):
 
-    global AI_filter
-
-    AI_filter = not AI_filter
+    user = User(callback.from_user.id)
+    user.config["ai_filter"] = not user.config["ai_filter"]
 
     await callback.message.edit_text(
         "Settings",
-        reply_markup=settings_menu()
+        reply_markup=settings_menu(user)
     )
 
     await callback.answer()
 
-def settings_menu():
+def settings_menu(user):
+
+    ai_filter = user.config["ai_filter"]
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="✅ AI filter enabled" if AI_filter else "❌ AI filter disabled",
+                    text="✅ AI filter enabled" if ai_filter else "❌ AI filter disabled",
                     callback_data="turn_AI_filter"
                 )
             ],
@@ -346,9 +343,11 @@ def settings_menu():
 @dp.callback_query(F.data == "settings")
 async def settings(callback: CallbackQuery):
 
+    user = User(callback.from_user.id)
+
     await callback.message.edit_text(
         "Settings",
-        reply_markup=settings_menu()
+        reply_markup=settings_menu(user)
     )
 
     await callback.answer()
@@ -365,30 +364,20 @@ async def start(message: Message):
 
 # ===== Open Feed =====
 
-decay_counter = 0
-
 @dp.callback_query(F.data == "feed")
 async def open_feed(callback: CallbackQuery):
 
-    global decay_counter
-    decay_counter += 1
-    if decay_counter == 20:
-        for tag in like_tags:
-            if like_tags[tag] > 0:
-                like_tags[tag] *= 0.97
-            elif like_tags[tag] < 0:
-                like_tags[tag] *= 0.9
-        decay_counter = 0
+    user = User(callback.from_user.id)
 
-    post = get_random_post()
+    post = get_random_post(user)
     if post == None:
         return
     
-    posts_cache[post["id"]] = post
+    user.posts_cache[post["id"]] = post
 
-    if len(posts_cache) > 200:
-        oldest_key = next(iter(posts_cache))
-        del posts_cache[oldest_key] 
+    if len(user.posts_cache) > 200:
+        oldest_key = next(iter(user.posts_cache))
+        del user.posts_cache[oldest_key] 
 
     image_url = (
         post.get("sample_url")
@@ -408,12 +397,16 @@ async def open_feed(callback: CallbackQuery):
         reply_markup=feed_keyboard(post["id"])
     )
 
+    user.save_user_data()
+
     await callback.answer()
 
 # ===== Like =====
 
 @dp.callback_query(F.data.startswith("like:"))
 async def like_post(callback: CallbackQuery):
+
+    user = User(callback.from_user.id)
 
     isLiked = int(callback.data.split(":")[1])
     if isLiked:
@@ -427,12 +420,12 @@ async def like_post(callback: CallbackQuery):
         reply_markup=feed_keyboard(post_id, liked=True)
     )
 
-    post = posts_cache.get(int(post_id))
+    post = user.posts_cache.get(post_id)
     tags = post["tags"].split()
 
     for tag in tags:
-        if tag not in like_tags:
-            like_tags[tag] = 0
+        if tag not in user.like_tags:
+            user.like_tags[tag] = 0
 
         base = 1
 
@@ -448,17 +441,21 @@ async def like_post(callback: CallbackQuery):
         if "(" in tag:
             base *= 1.8
 
-        preference = 1 + 0.6 * math.tanh(like_tags[tag] / 5)
+        preference = 1 + 0.6 * math.tanh(user.like_tags[tag] / 5)
 
         factor = base * preference
 
-        like_tags[tag] += factor
+        user.like_tags[tag] += factor
 
-    print_top_tags()
+    user.save_user_data()
+
+    print_top_tags(user)
     await callback.answer("Added to favorites")
 
 @dp.callback_query(F.data.startswith("dislike:"))
 async def dislike_post(callback: CallbackQuery):
+
+    user = User(callback.from_user.id)
 
     isDisliked = int(callback.data.split(":")[1])
     if isDisliked:
@@ -472,12 +469,12 @@ async def dislike_post(callback: CallbackQuery):
         reply_markup=feed_keyboard(post_id, disliked=True)
     )
 
-    post = posts_cache.get(int(post_id))
+    post = user.posts_cache.get(post_id)
     tags = post["tags"].split()
 
     for tag in tags:
-        if tag not in like_tags:
-            like_tags[tag] = 0
+        if tag not in user.like_tags:
+            user.like_tags[tag] = 0
 
         base = 1
 
@@ -493,13 +490,15 @@ async def dislike_post(callback: CallbackQuery):
         if "(" in tag:
             base *= 1.8
 
-        preference = 1 + 0.6 * math.tanh(-like_tags[tag] / 5)
+        preference = 1 + 0.6 * math.tanh(-user.like_tags[tag] / 5)
 
         factor = base * preference
 
-        like_tags[tag] -= factor
+        user.like_tags[tag] -= factor
 
-    print_top_tags()
+    user.save_user_data()
+
+    print_top_tags(user)
     await callback.answer("Less like this")
 
 # ===== Main =====
