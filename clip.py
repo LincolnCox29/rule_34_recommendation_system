@@ -37,16 +37,3 @@ class Clip:
             imageTensor = self.model.encode_image(image)
 
         return imageTensor / imageTensor.norm(dim=-1, keepdim=True)
-
-    async def __download_image(self, session, url):
-        try:
-            async with session.get(url) as response:
-                if response.status != 200:
-                    return None
-
-                data = await response.read()
-                return Image.open(BytesIO(data)).convert("RGB")
-
-        except Exception:
-            return None
-        

@@ -17,6 +17,8 @@ R34_API_KEY = os.getenv("R34_API_KEY")
 R34_USER_ID = os.getenv("R34_USER_ID")
 CLIP: Clip = Clip()
 
+CLIP_WEIGHT = 7.0
+
 TAGS_POP = None
 def load_tags_pop():
     global TAGS_POP
@@ -42,7 +44,9 @@ class User:
     def __create_json(self):
         self.reactions = {}
         self.posts_cache = {}
-        self.tensor = torch.zeros(512, dtype=torch.float32, device=CLIP.device)
+        self.reaction_count = 0
+        self.like_tensor = torch.zeros(512, dtype=torch.float32, device=CLIP.device)
+        self.dislike_tensor = torch.zeros(512, dtype=torch.float32, device=CLIP.device)
         self.config = {
             "ai_filter": False
         }
@@ -54,8 +58,14 @@ class User:
         self.reactions = data["reactions"]
         self.posts_cache = data["posts_cache"]
         self.config = data["config"]
-        self.tensor = torch.tensor(
-            data["tensor"],
+        self.reaction_count = data["reaction_count"]
+        self.like_tensor = torch.tensor(
+            data["like_tensor"],
+            dtype=torch.float32,
+            device=CLIP.device
+        )
+        self.dislike_tensor = torch.tensor(
+            data["dislike_tensor"],
             dtype=torch.float32,
             device=CLIP.device
         )
@@ -65,7 +75,9 @@ class User:
             "reactions": self.reactions,
             "posts_cache": self.posts_cache,
             "config": self.config,
-            "tensor": self.tensor.cpu().tolist()
+            "reaction_count": self.reaction_count,
+            "like_tensor": self.like_tensor.cpu().tolist(),
+            "dislike_tensor": self.dislike_tensor.cpu().tolist()
         }
         with open(self.json_path, "w", encoding="utf-8") as file:
             json.dump(
@@ -97,40 +109,43 @@ class User:
                     "skip": 0
                 }
             self.reactions[tag][type] += 1
+            
+        if type != "skip":
+            self.reaction_count += 1
 
-    def __update_tensor(self, post, factor):
+    def __update_like_tensor(self, post, factor):
 
         imageTensor = CLIP.get_post_tensor(post)
 
-        self.tensor += imageTensor.squeeze() * factor
+        self.like_tensor += imageTensor.squeeze() * factor
 
-        norm = torch.norm(self.tensor)
+        norm = torch.norm(self.like_tensor)
         if norm > 0:
-            self.tensor /= norm
+            self.like_tensor /= norm
+
+    def __update_dislike_tensor(self, post, factor):
+
+        imageTensor = CLIP.get_post_tensor(post)
+
+        self.dislike_tensor += imageTensor.squeeze() * factor
+
+        norm = torch.norm(self.dislike_tensor)
+        if norm > 0:
+            self.dislike_tensor /= norm
 
     def dislike_post(self, post):
         self.__reaction("dis", post)
-        self.__update_tensor(post, -5.7)
+        self.__update_dislike_tensor(post, 0.4)
         self.save_user_data()
 
     def like_post(self, post):
         self.__reaction("like", post)
-        self.__update_tensor(post, 5.7)
+        self.__update_like_tensor(post, 1.0)
         self.save_user_data()
 
     def skip_post(self, post):
         self.__reaction("skip", post)
-        self.__update_tensor(post, -1.2)
         self.save_user_data()
-
-    def __tensor_score(self, post):
-
-        similarity = torch.nn.functional.cosine_similarity(
-            self.tensor.unsqueeze(0),
-            CLIP.get_post_tensor(post).squeeze().unsqueeze(0)
-        ).item()
-
-        return similarity
 
     def __tag_weight(self, tag):
 
@@ -211,15 +226,6 @@ class User:
         if is_exploration_mod:
             unknown_ratio = unknown / len(tags)
             score += unknown_ratio * 2
-
-        tensor_score = post.get("similarity", 0)
-
-        score = score + tensor_score * 10
-
-        print(
-            f"post={post['id']}",
-            f"similarity={tensor_score:.4f}"
-        )
 
         return score
     
@@ -339,9 +345,8 @@ class User:
                 if not posts:
                     continue
 
-                await self.__get_post_tensor_batch(posts)
+                scored_posts = []
 
-                best_post = None
                 for post in posts:
                     if str(post["id"]) in self.posts_cache:
                         continue
@@ -349,9 +354,27 @@ class User:
                     score = self.__score_post(post)
 
                     post["user_score"] = score
+                    scored_posts.append(post)
 
-                    if best_post == None or score > best_post["user_score"]:
+                scored_posts.sort(
+                    key=lambda p: p["user_score"],
+                    reverse=True
+                )
+
+                best_posts = scored_posts[:10]
+
+                await self.__get_post_tensor_batch(best_posts)
+
+                best_post = None
+                for post in best_posts:
+                    if (
+                        best_post is None
+                        or post["user_score"] + post["similarity"]
+                        >
+                        best_post["user_score"] + best_post.get("similarity", 0)
+                    ):
                         best_post = post
+
                 return best_post
 
             except Exception as e:
@@ -397,7 +420,7 @@ class User:
             for post in posts
         ]
 
-        connector = aiohttp.TCPConnector(limit=20)
+        connector = aiohttp.TCPConnector(limit=10)
 
         async with aiohttp.ClientSession(
             connector=connector,
@@ -434,7 +457,12 @@ class User:
                 keepdim=True
             )
 
-            similarities = embeddings @ self.tensor
+            pos_similarities = embeddings @ self.like_tensor
 
-        for post, similarity in zip(valid_posts, similarities):
-            post["similarity"] = similarity.item()
+            neg_similarities = embeddings @ self.dislike_tensor
+
+        for post, pos_sim, neg_sim in zip(valid_posts, pos_similarities, neg_similarities):
+            post["similarity"] = (
+                pos_sim.item()
+                - neg_sim.item() * 0.5
+            ) * CLIP_WEIGHT
