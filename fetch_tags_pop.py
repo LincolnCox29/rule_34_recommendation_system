@@ -14,7 +14,11 @@ def normalize_tag(tag):
         .rstrip(",")
     )
 
-def tags_pop_to_json(tags):
+def tags_pop_to_json(tags: dict):
+
+    for key in tags.keys():
+        if tags[key] == 1:
+            del tags[key]
 
     sorted_tags = dict(
         sorted(

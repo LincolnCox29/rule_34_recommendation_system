@@ -5,10 +5,17 @@ import random
 import requests
 from pathlib import Path
 from dotenv import load_dotenv
+from clip import Clip
+import torch
+import aiohttp
+import asyncio
+from PIL import Image
+from io import BytesIO
 
 load_dotenv()
 R34_API_KEY = os.getenv("R34_API_KEY")
 R34_USER_ID = os.getenv("R34_USER_ID")
+CLIP: Clip = Clip()
 
 TAGS_POP = None
 def load_tags_pop():
@@ -35,6 +42,7 @@ class User:
     def __create_json(self):
         self.reactions = {}
         self.posts_cache = {}
+        self.tensor = torch.zeros(512, dtype=torch.float32, device=CLIP.device)
         self.config = {
             "ai_filter": False
         }
@@ -46,12 +54,18 @@ class User:
         self.reactions = data["reactions"]
         self.posts_cache = data["posts_cache"]
         self.config = data["config"]
+        self.tensor = torch.tensor(
+            data["tensor"],
+            dtype=torch.float32,
+            device=CLIP.device
+        )
         
     def save_user_data(self):
         data = {
             "reactions": self.reactions,
             "posts_cache": self.posts_cache,
-            "config": self.config
+            "config": self.config,
+            "tensor": self.tensor.cpu().tolist()
         }
         with open(self.json_path, "w", encoding="utf-8") as file:
             json.dump(
@@ -84,16 +98,39 @@ class User:
                 }
             self.reactions[tag][type] += 1
 
-        self.save_user_data()
+    def __update_tensor(self, post, factor):
+
+        imageTensor = CLIP.get_post_tensor(post)
+
+        self.tensor += imageTensor.squeeze() * factor
+
+        norm = torch.norm(self.tensor)
+        if norm > 0:
+            self.tensor /= norm
 
     def dislike_post(self, post):
         self.__reaction("dis", post)
+        self.__update_tensor(post, -5.7)
+        self.save_user_data()
 
     def like_post(self, post):
         self.__reaction("like", post)
+        self.__update_tensor(post, 5.7)
+        self.save_user_data()
 
     def skip_post(self, post):
         self.__reaction("skip", post)
+        self.__update_tensor(post, -1.2)
+        self.save_user_data()
+
+    def __tensor_score(self, post):
+
+        similarity = torch.nn.functional.cosine_similarity(
+            self.tensor.unsqueeze(0),
+            CLIP.get_post_tensor(post).squeeze().unsqueeze(0)
+        ).item()
+
+        return similarity
 
     def __tag_weight(self, tag):
 
@@ -175,6 +212,15 @@ class User:
             unknown_ratio = unknown / len(tags)
             score += unknown_ratio * 2
 
+        tensor_score = post.get("similarity", 0)
+
+        score = score + tensor_score * 10
+
+        print(
+            f"post={post['id']}",
+            f"similarity={tensor_score:.4f}"
+        )
+
         return score
     
     def __get_best_tags(self, limit=20):
@@ -247,7 +293,7 @@ class User:
 
         return " ".join(query)
     
-    def next_post(self):
+    async def next_post(self):
 
         for i in range(5):
 
@@ -293,6 +339,8 @@ class User:
                 if not posts:
                     continue
 
+                await self.__get_post_tensor_batch(posts)
+
                 best_post = None
                 for post in posts:
                     if str(post["id"]) in self.posts_cache:
@@ -307,8 +355,8 @@ class User:
                 return best_post
 
             except Exception as e:
-                print(e)
-                continue
+                import traceback
+                traceback.print_exc()
 
         return None
     
@@ -325,3 +373,68 @@ class User:
         for tag in sorted_by_val.keys():
             print(f"Weight of the \"{tag}\": ", weights[tag])
         
+
+    async def __session_download_image(self, session, url):
+        try:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    return None
+
+                data = await response.read()
+                return Image.open(BytesIO(data)).convert("RGB")
+
+        except Exception:
+            return None
+
+    async def __get_post_tensor_batch(self, posts):
+
+        urls = [
+            (
+                post.get("preview_url")
+                or post.get("sample_url")
+                or post.get("file_url")
+            )
+            for post in posts
+        ]
+
+        connector = aiohttp.TCPConnector(limit=20)
+
+        async with aiohttp.ClientSession(
+            connector=connector,
+            headers={"User-Agent": "Mozilla/5.0"}
+        ) as session:
+
+            images = await asyncio.gather(*[
+                self.__session_download_image(session, url)
+                for url in urls
+            ])
+
+        valid_images = []
+        valid_posts = []
+
+        for post, img in zip(posts, images):
+            if img is not None:
+                valid_images.append(img)
+                valid_posts.append(post)
+
+        if not valid_images:
+            return
+
+        batch = torch.stack([
+            CLIP.preprocess(img)
+            for img in valid_images
+        ]).to(CLIP.device)
+
+        with torch.no_grad():
+
+            embeddings = CLIP.model.encode_image(batch)
+
+            embeddings = embeddings / embeddings.norm(
+                dim=-1,
+                keepdim=True
+            )
+
+            similarities = embeddings @ self.tensor
+
+        for post, similarity in zip(valid_posts, similarities):
+            post["similarity"] = similarity.item()

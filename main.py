@@ -2,6 +2,7 @@ import asyncio
 from dotenv import load_dotenv
 import os
 from user import User
+import torch
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
@@ -148,7 +149,7 @@ async def open_feed(callback: CallbackQuery):
         if post:
             user.skip_post(post)
 
-    post = user.next_post()
+    post = await user.next_post()
     if post == None:
         return
 
@@ -222,7 +223,15 @@ async def dislike_post_ui(callback: CallbackQuery):
 
 # ===== Main =====
 
+def machine_configuration():
+    print("Torch:", torch.__version__)
+    print("CUDA:", torch.version.cuda)
+    print("Available:", torch.cuda.is_available())
+    if torch.cuda.is_available():
+        print("GPU:", torch.cuda.get_device_name(0))
+
 async def main():
+    machine_configuration()
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
