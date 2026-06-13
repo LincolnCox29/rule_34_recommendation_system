@@ -56,7 +56,7 @@ def feed_keyboard(post_id, liked=False, disliked=False):
                     callback_data=f"like:{1 if liked else 0}:{post_id}"
                 ),
                 InlineKeyboardButton(
-                    text="Next",
+                    text="Skip",
                     callback_data=f"feed:{post_id}"
                 )   
             ],
@@ -141,7 +141,7 @@ async def open_feed(callback: CallbackQuery):
     user = User(callback.from_user.id)
 
     data = callback.data
-    if ":" in data:
+    if ":" in data and "feed" in data:
         post_id = data.split(":")[1]
 
         post = user.posts_cache.get(post_id)
@@ -199,6 +199,8 @@ async def like_post(callback: CallbackQuery):
 
     await callback.answer("Added to favorites")
 
+    await open_feed(callback)
+
 @dp.callback_query(F.data.startswith("dislike:"))
 async def dislike_post_ui(callback: CallbackQuery):
 
@@ -220,6 +222,8 @@ async def dislike_post_ui(callback: CallbackQuery):
     user.dislike_post(post)
 
     await callback.answer("Less like this")
+
+    await open_feed(callback)
 
 # ===== Main =====
 

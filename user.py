@@ -113,34 +113,30 @@ class User:
         if type != "skip":
             self.reaction_count += 1
 
-    def __update_like_tensor(self, post, factor):
+    def __update_like_tensor(self, post, alpha):
 
         imageTensor = CLIP.get_post_tensor(post)
 
-        self.like_tensor += imageTensor.squeeze() * factor
+        self.like_tensor = self.like_tensor * 0.95 + imageTensor.squeeze() * alpha
 
-        norm = torch.norm(self.like_tensor)
-        if norm > 0:
-            self.like_tensor /= norm
+        self.like_tensor /= torch.norm(self.like_tensor)
 
-    def __update_dislike_tensor(self, post, factor):
+    def __update_dislike_tensor(self, post, alpha):
 
         imageTensor = CLIP.get_post_tensor(post)
 
-        self.dislike_tensor += imageTensor.squeeze() * factor
+        self.dislike_tensor = self.dislike_tensor * 0.95 + imageTensor.squeeze() * alpha
 
-        norm = torch.norm(self.dislike_tensor)
-        if norm > 0:
-            self.dislike_tensor /= norm
+        self.dislike_tensor /= torch.norm(self.dislike_tensor)
 
     def dislike_post(self, post):
         self.__reaction("dis", post)
-        self.__update_dislike_tensor(post, 0.4)
+        self.__update_dislike_tensor(post, 0.08)
         self.save_user_data()
 
     def like_post(self, post):
         self.__reaction("like", post)
-        self.__update_like_tensor(post, 1.0)
+        self.__update_like_tensor(post, 0.05)
         self.save_user_data()
 
     def skip_post(self, post):
@@ -303,10 +299,20 @@ class User:
 
         for i in range(5):
 
-            query = self.__build_query()
+            if i < 4:
+                query = self.__build_query()
+            elif self.config["ai_filter"]:
+                query = []
+                query = (
+                    "-ai_generated " +
+                    "-stable_diffusion " +
+                    "-midjourney " +
+                    "-novelai " +
+                    "-ia_generated"
+                )
             print("QUERY:", query)
 
-            pid = random.randint(0, 200)
+            pid = random.randint(0, 100)
 
             params = {
                 "page": "dapi",
@@ -314,8 +320,8 @@ class User:
                 "q": "index",
                 "json": 1,
                 "limit": 100,
-                "pid": 0,
-                "tags": query,
+                "pid": pid,
+                "tags": query + " score:>20",
                 "api_key": R34_API_KEY,
                 "user_id": R34_USER_ID
             }
