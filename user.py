@@ -22,7 +22,7 @@ CLIP_WEIGHT = 7.0
 TAGS_POP = None
 def load_tags_pop():
     global TAGS_POP
-    print(os.path.abspath("tags_pop.json"))
+    print("Tags pop json path: ", os.path.abspath("tags_pop.json"))
     try:
         with open("tags_pop.json", "r", encoding="utf-8") as file:
             TAGS_POP = json.load(file)
@@ -295,7 +295,16 @@ class User:
 
         return " ".join(query)
     
-    async def next_post(self):
+    async def next_post(self, loading_msg=None, current_loading_text=""):
+
+        async def update_msg(text, points=3):
+            text += points * "."
+            nonlocal current_loading_text
+            if (loading_msg is not None and current_loading_text != text):
+                current_loading_text = text
+                await loading_msg.edit_text(current_loading_text)
+
+        await update_msg("🔄 Building query")
 
         for i in range(5):
 
@@ -311,6 +320,8 @@ class User:
                     "-ia_generated"
                 )
             print("QUERY:", query)
+
+            await update_msg("🔄 Searching", points=i if i < 4 else 3)
 
             pid = random.randint(0, 100)
 
@@ -353,6 +364,8 @@ class User:
 
                 scored_posts = []
 
+                await update_msg("🔄 Ranking posts")
+
                 for post in posts:
                     if str(post["id"]) in self.posts_cache:
                         continue
@@ -367,6 +380,8 @@ class User:
                     reverse=True
                 )
 
+                await update_msg("🔄 Finding best post")
+
                 best_posts = scored_posts[:10]
 
                 await self.__get_post_tensor_batch(best_posts)
@@ -380,6 +395,8 @@ class User:
                         best_post["user_score"] + best_post.get("similarity", 0)
                     ):
                         best_post = post
+
+                await loading_msg.delete()
 
                 return best_post
 

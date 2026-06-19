@@ -149,7 +149,8 @@ async def open_feed(callback: CallbackQuery):
         if post:
             user.skip_post(post)
 
-    post = await user.next_post()
+    loading_msg = await callback.message.answer("🔄 Loading...")
+    post = await user.next_post(loading_msg)
     if post == None:
         return
 
