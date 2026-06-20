@@ -3,13 +3,12 @@ from dotenv import load_dotenv
 import os
 from user import User
 import torch
+import keyboards
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message,
     CallbackQuery,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
     LabeledPrice,
     PreCheckoutQuery
 )
@@ -22,60 +21,15 @@ dp = Dispatcher()
 R34_API_KEY = os.getenv("R34_API_KEY")
 R34_USER_ID = os.getenv("R34_USER_ID")
 
-def main_menu():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="To feed",
-                    callback_data="feed"
-                ),
-                InlineKeyboardButton(
-                    text="Settings",
-                    callback_data="settings"
-                )
-            ]
-        ]
-    )
-
 @dp.callback_query(F.data == "main_menu")
 async def back_to_main(callback: CallbackQuery):
 
     await callback.message.answer(
         "Choose action:",
-        reply_markup=main_menu()
+        reply_markup=keyboards.main_menu()
     )
 
     await callback.answer()
-
-def feed_keyboard(post_id, liked=False, disliked=False):
-
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="❤️ Liked" if liked else "🤍 Like",
-                    callback_data=f"like:{1 if liked else 0}:{post_id}"
-                ),
-                InlineKeyboardButton(
-                    text="Skip",
-                    callback_data=f"feed:{post_id}"
-                )   
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🙈 Less like this" if disliked else "🐵 Less like this",
-                    callback_data=f"dislike:{1 if disliked else 0}:{post_id}"
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="Back",
-                    callback_data="main_menu"
-                ), 
-            ]
-        ]
-    )
 
 @dp.callback_query(F.data == "turn_AI_filter")
 async def turn_AI_filter(callback: CallbackQuery):
@@ -85,33 +39,12 @@ async def turn_AI_filter(callback: CallbackQuery):
 
     await callback.message.edit_text(
         "Settings",
-        reply_markup=settings_menu(user)
+        reply_markup=keyboards.settings_menu(user)
     )
 
     user.save_user_data()
 
     await callback.answer()
-
-def settings_menu(user):
-
-    ai_filter = user.config["ai_filter"]
-
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="✅ AI filter enabled" if ai_filter else "❌ AI filter disabled",
-                    callback_data="turn_AI_filter"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="Back",
-                    callback_data="main_menu"
-                )
-            ]
-        ]
-    )
 
 @dp.callback_query(F.data == "settings")
 async def settings(callback: CallbackQuery):
@@ -120,7 +53,7 @@ async def settings(callback: CallbackQuery):
 
     await callback.message.edit_text(
         "Settings",
-        reply_markup=settings_menu(user)
+        reply_markup=keyboards.settings_menu(user)
     )
 
     await callback.answer()
@@ -132,7 +65,7 @@ async def start(message: Message):
 
     await message.answer(
         "Choose action:",
-        reply_markup=main_menu()
+        reply_markup=keyboards.main_menu()
     )
 
 # ===== Open Feed =====
@@ -176,7 +109,7 @@ async def open_feed(callback: CallbackQuery):
     await callback.message.answer_photo(
         photo=image_url,
         caption= f"Score: {post['score']}\nTags: {formatted_tags}",
-        reply_markup=feed_keyboard(str(post["id"]))
+        reply_markup=keyboards.feed_keyboard(str(post["id"]))
     )
 
     await callback.answer()
@@ -200,7 +133,7 @@ async def like_post(callback: CallbackQuery):
     print(post_id)
 
     await callback.message.edit_reply_markup(
-        reply_markup=feed_keyboard(post_id, liked=True)
+        reply_markup=keyboards.feed_keyboard(post_id, liked=True)
     )
 
     post = user.posts_cache.get(post_id)
@@ -227,7 +160,7 @@ async def dislike_post_ui(callback: CallbackQuery):
     print("disliked: ", post_id)
 
     await callback.message.edit_reply_markup(
-        reply_markup=feed_keyboard(post_id, disliked=True)
+        reply_markup=keyboards.feed_keyboard(post_id, disliked=True)
     )
 
     post = user.posts_cache.get(post_id)
@@ -236,24 +169,6 @@ async def dislike_post_ui(callback: CallbackQuery):
     await callback.answer("Less like this")
 
     await open_feed(callback)
-
-def premium_keyboard():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="⭐ Premium — 30 days",
-                    callback_data="buy_premium"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⬅ Back",
-                    callback_data="main_menu"
-                )
-            ]
-        ]
-    )
 
 async def check_limit(callback: CallbackQuery, user: User):
     if user.sub_manager.can_view_post():
@@ -269,7 +184,7 @@ async def check_limit(callback: CallbackQuery, user: User):
         "- Faster discovery of new content\n"
         "- No daily limits\n"
         "- Support for the author",
-        reply_markup=premium_keyboard()
+        reply_markup=keyboards.premium_keyboard()
     )
 
     return False
