@@ -31,7 +31,7 @@ class Subscription_manager:
     def is_premium(self) -> bool:
         return (
             (time.time() < self.subscription_end) or
-            (self.id in ENDLESS_SUBS)
+            (str(self.id) in ENDLESS_SUBS)
         )
     
     def __get_endless_subs(self):
