@@ -11,10 +11,12 @@ import aiohttp
 import asyncio
 from PIL import Image
 from io import BytesIO
+from subscription_manager import Subscription_manager
 
-load_dotenv()
 R34_API_KEY = os.getenv("R34_API_KEY")
+print("R34_API_KEY: ", R34_API_KEY)
 R34_USER_ID = os.getenv("R34_USER_ID")
+print("R34_USER_ID: ", R34_USER_ID)
 CLIP: Clip = Clip()
 
 CLIP_WEIGHT = 7.0
@@ -34,6 +36,7 @@ class User:
 
     def __init__(self, id):
         self.id = id
+        self.sub_manager = Subscription_manager(id)
         self.json_path = f"users\\{self.id}.json"
         path = Path(self.json_path)
         if path.is_file():
@@ -69,6 +72,7 @@ class User:
             dtype=torch.float32,
             device=CLIP.device
         )
+        self.sub_manager.load(data)
         
     def save_user_data(self):
         data = {
@@ -79,6 +83,7 @@ class User:
             "like_tensor": self.like_tensor.cpu().tolist(),
             "dislike_tensor": self.dislike_tensor.cpu().tolist()
         }
+        data.update(self.sub_manager.get_data_for_save())
         with open(self.json_path, "w", encoding="utf-8") as file:
             json.dump(
                 data,
@@ -98,6 +103,8 @@ class User:
 
     def __reaction(self, type, post):
         tags = post["tags"].split()
+
+        self.sub_manager.register_post_view()
 
         self.print_tags_weight(max=-3)
 
@@ -384,17 +391,7 @@ class User:
 
                 best_posts = scored_posts[:10]
 
-                await self.__get_post_tensor_batch(best_posts)
-
-                best_post = None
-                for post in best_posts:
-                    if (
-                        best_post is None
-                        or post["user_score"] + post["similarity"]
-                        >
-                        best_post["user_score"] + best_post.get("similarity", 0)
-                    ):
-                        best_post = post
+                best_post = await self.__get_best_post(best_posts)
 
                 await loading_msg.delete()
 
@@ -406,6 +403,28 @@ class User:
 
         return None
     
+    async def __get_best_post(self, best_posts):
+
+        ranging = None
+        if self.sub_manager.is_premium():
+            await self.__get_post_tensor_batch(best_posts)
+            ranging = lambda post, best_post: (
+                best_post is None
+                or post["user_score"] + post["similarity"] >
+                best_post["user_score"] + best_post.get("similarity", 0)
+            )
+        else:
+            ranging = lambda post, best_post: (
+                best_post is None
+                or post["user_score"] > best_post["user_score"]
+            )
+
+        best_post = None
+        for post in best_posts:
+            if (ranging(post, best_post)):
+                best_post = post
+        return best_post
+
     def print_tags_weight(self, min = -999, max = 999):
         weights = {}
 

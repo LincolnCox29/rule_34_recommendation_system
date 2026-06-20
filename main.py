@@ -9,7 +9,9 @@ from aiogram.types import (
     Message,
     CallbackQuery,
     InlineKeyboardMarkup,
-    InlineKeyboardButton
+    InlineKeyboardButton,
+    LabeledPrice,
+    PreCheckoutQuery
 )
 load_dotenv()
 
@@ -140,6 +142,9 @@ async def open_feed(callback: CallbackQuery):
 
     user = User(callback.from_user.id)
 
+    if not await check_limit(callback, user):
+        return
+
     data = callback.data
     if ":" in data and "feed" in data:
         post_id = data.split(":")[1]
@@ -183,6 +188,9 @@ async def like_post(callback: CallbackQuery):
 
     user = User(callback.from_user.id)
 
+    if not await check_limit(callback, user):
+        return
+
     isLiked = int(callback.data.split(":")[1])
     if isLiked:
         return
@@ -207,6 +215,9 @@ async def dislike_post_ui(callback: CallbackQuery):
 
     user = User(callback.from_user.id)
 
+    if not await check_limit(callback, user):
+        return
+
     isDisliked = int(callback.data.split(":")[1])
     if isDisliked:
         return
@@ -225,6 +236,86 @@ async def dislike_post_ui(callback: CallbackQuery):
     await callback.answer("Less like this")
 
     await open_feed(callback)
+
+def premium_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="⭐ Premium — 30 days",
+                    callback_data="buy_premium"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅ Back",
+                    callback_data="main_menu"
+                )
+            ]
+        ]
+    )
+
+async def check_limit(callback: CallbackQuery, user: User):
+    if user.sub_manager.can_view_post():
+        return True
+
+    await callback.message.answer(
+        "🚫 Daily free limit reached.\n\n"
+        "You've used all free posts available today.\n\n"
+        "⭐ Premium unlocks:\n"
+        "- Unlimited feed\n"
+        "- AI image recommendations (CLIP)\n"
+        "- Better post ranking\n"
+        "- Faster discovery of new content\n"
+        "- No daily limits\n"
+        "- Support for the author",
+        reply_markup=premium_keyboard()
+    )
+
+    return False
+
+@dp.callback_query(F.data == "buy_premium")
+async def buy_premium(callback: CallbackQuery):
+
+    await bot.send_invoice(
+        chat_id=callback.from_user.id,
+        title="Premium Subscription",
+        description="30 days of Premium access",
+        payload="premium_30",
+        currency="XTR",
+        prices=[
+            LabeledPrice(
+                label="Premium 30 days",
+                amount=1
+            )
+        ]
+    )
+
+    await callback.answer()
+
+@dp.pre_checkout_query()
+async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
+    await bot.answer_pre_checkout_query(
+        pre_checkout_query.id,
+        ok=True
+    )
+
+@dp.message(F.successful_payment)
+async def successful_payment(message: Message):
+
+    user = User(message.from_user.id)
+
+    payment = message.successful_payment
+
+    match payment.invoice_payload:
+        case "premium_30":
+            user.sub_manager.add_subscription_days(30)
+
+    user.save_user_data()
+
+    await message.answer(
+        "✅ Premium activated for 30 days!"
+    )
 
 # ===== Main =====
 
