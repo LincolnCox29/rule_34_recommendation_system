@@ -73,7 +73,7 @@ async def start(message: Message):
 
 # ===== Open Feed =====
 
-@dp.callback_query(F.data.startswith("feed:"))
+@dp.callback_query(F.data.startswith("to_feed"))
 async def open_feed(callback: CallbackQuery):
 
     user = User(callback.from_user.id, R34_CLIENT)
@@ -82,7 +82,7 @@ async def open_feed(callback: CallbackQuery):
         return
 
     data = callback.data
-    if ":" in data and "feed" in data:
+    if ":" in data and "to_feed" in data:
         post_id = data.split(":")[1]
 
         post = user.posts_cache.get(post_id)
@@ -281,8 +281,10 @@ def machine_configuration():
 async def main():
     machine_configuration()
     await R34_CLIENT.start()
-    await dp.start_polling(bot)
-    await R34_CLIENT.close()
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await R34_CLIENT.close()
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -1,14 +1,18 @@
+import os
+
 import requests
 from PIL import Image
 from io import BytesIO
 import open_clip
 import torch
 
+DEVICE = os.getenv("DEVICE")
+
 class Clip:
     def __init__(self):
         print("Loading model...")
         try:
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.device = DEVICE if torch.cuda.is_available() else "cpu"
             print("clip device:", self.device)
             self.model, _, self.preprocess = open_clip.create_model_and_transforms(
                 "ViT-B-32",

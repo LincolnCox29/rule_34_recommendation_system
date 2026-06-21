@@ -6,7 +6,7 @@ def main_menu():
             [
                 InlineKeyboardButton(
                     text="To feed",
-                    callback_data="feed"
+                    callback_data="to_feed"
                 ),
                 InlineKeyboardButton(
                     text="Settings",
@@ -39,7 +39,7 @@ def feed_keyboard(post_id, liked=False, disliked=False):
                 ),
                 InlineKeyboardButton(
                     text="Skip",
-                    callback_data=f"feed:{post_id}"
+                    callback_data=f"to_feed:{post_id}"
                 )   
             ],
             [
