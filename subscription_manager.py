@@ -1,8 +1,7 @@
 import time
 import os
-from dotenv import load_dotenv
 
-FREE_POSTS_PER_DAY = 10
+FREE_POSTS_PER_DAY = 50
 DAY = 86400
 ENDLESS_SUBS = []
 

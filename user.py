@@ -2,9 +2,7 @@ import json
 import math
 import os
 import random
-import requests
 from pathlib import Path
-from dotenv import load_dotenv
 from clip import Clip
 import torch
 import aiohttp
@@ -19,7 +17,7 @@ R34_USER_ID = os.getenv("R34_USER_ID")
 print("R34_USER_ID: ", R34_USER_ID)
 CLIP: Clip = Clip()
 
-CLIP_WEIGHT = 7.0
+CLIP_WEIGHT = 4.0
 
 TAGS_POP = None
 def load_tags_pop():
@@ -34,7 +32,8 @@ load_tags_pop()
 
 class User:
 
-    def __init__(self, id):
+    def __init__(self, id, r34_client):
+        self.r34_client = r34_client
         self.id = id
         self.sub_manager = Subscription_manager(id)
         self.json_path = f"users\\{self.id}.json"
@@ -103,8 +102,6 @@ class User:
 
     def __reaction(self, type, post):
         tags = post["tags"].split()
-
-        self.sub_manager.register_post_view()
 
         self.print_tags_weight(max=-3)
 
@@ -337,31 +334,16 @@ class User:
                 "s": "post",
                 "q": "index",
                 "json": 1,
-                "limit": 100,
+                "limit": 200 if self.sub_manager.is_premium() else 100,
                 "pid": pid,
                 "tags": query + " score:>20",
                 "api_key": R34_API_KEY,
                 "user_id": R34_USER_ID
             }
 
-            headers = {
-                "User-Agent": "Mozilla/5.0"
-            }
-
             try:
 
-                response = requests.get(
-                    "https://api.rule34.xxx/index.php",
-                    params=params,
-                    headers=headers,
-                    timeout=10
-                )
-
-                posts = response.json()
-                
-                print("STATUS:", response.status_code)
-                print("TYPE:", type(posts))
-                print("TEXT:", response.text[:500])
+                posts = await self.r34_client.search(params)
 
                 if not isinstance(posts, list):
                     raise TypeError("Bad API response")
@@ -392,6 +374,8 @@ class User:
                 best_posts = scored_posts[:10]
 
                 best_post = await self.__get_best_post(best_posts)
+
+                self.sub_manager.register_post_view()
 
                 await loading_msg.delete()
 

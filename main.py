@@ -4,6 +4,7 @@ import os
 from user import User
 import torch
 import keyboards
+from rule_34_client import Rule_34_client
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
@@ -21,6 +22,8 @@ dp = Dispatcher()
 R34_API_KEY = os.getenv("R34_API_KEY")
 R34_USER_ID = os.getenv("R34_USER_ID")
 
+R34_CLIENT = Rule_34_client()
+
 @dp.callback_query(F.data == "main_menu")
 async def back_to_main(callback: CallbackQuery):
 
@@ -34,7 +37,7 @@ async def back_to_main(callback: CallbackQuery):
 @dp.callback_query(F.data == "turn_AI_filter")
 async def turn_AI_filter(callback: CallbackQuery):
 
-    user = User(callback.from_user.id)
+    user = User(callback.from_user.id, R34_CLIENT)
     user.config["ai_filter"] = not user.config["ai_filter"]
 
     await callback.message.edit_text(
@@ -49,7 +52,7 @@ async def turn_AI_filter(callback: CallbackQuery):
 @dp.callback_query(F.data == "settings")
 async def settings(callback: CallbackQuery):
 
-    user = User(callback.from_user.id)
+    user = User(callback.from_user.id, R34_CLIENT)
 
     await callback.message.edit_text(
         "Settings",
@@ -70,10 +73,10 @@ async def start(message: Message):
 
 # ===== Open Feed =====
 
-@dp.callback_query(F.data.startswith("feed"))
+@dp.callback_query(F.data.startswith("feed:"))
 async def open_feed(callback: CallbackQuery):
 
-    user = User(callback.from_user.id)
+    user = User(callback.from_user.id, R34_CLIENT)
 
     if not await check_limit(callback, user):
         return
@@ -119,7 +122,7 @@ async def open_feed(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("like:"))
 async def like_post(callback: CallbackQuery):
 
-    user = User(callback.from_user.id)
+    user = User(callback.from_user.id, R34_CLIENT)
 
     if not await check_limit(callback, user):
         return
@@ -146,7 +149,7 @@ async def like_post(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("dislike:"))
 async def dislike_post_ui(callback: CallbackQuery):
 
-    user = User(callback.from_user.id)
+    user = User(callback.from_user.id, R34_CLIENT)
 
     if not await check_limit(callback, user):
         return
@@ -172,6 +175,7 @@ async def dislike_post_ui(callback: CallbackQuery):
 
 async def check_limit(callback: CallbackQuery, user: User):
     if user.sub_manager.can_view_post():
+        await callback.answer()
         return True
 
     await callback.message.answer(
@@ -183,25 +187,56 @@ async def check_limit(callback: CallbackQuery, user: User):
         "- Better post ranking\n"
         "- Faster discovery of new content\n"
         "- No daily limits\n"
-        "- Support for the author",
+        "- Support for the author\n\n"
+        "Choose a plan:",
         reply_markup=keyboards.premium_keyboard()
     )
 
+    await callback.answer()
+
     return False
 
-@dp.callback_query(F.data == "buy_premium")
+@dp.callback_query(F.data == "premium_promotion")
+async def premium_promotion(callback: CallbackQuery):
+    await callback.message.answer(
+        "⭐ Premium unlocks:\n"
+        "- Unlimited feed\n"
+        "- AI image recommendations (CLIP)\n"
+        "- Better post ranking\n"
+        "- Faster discovery of new content\n"
+        "- No daily limits\n"
+        "- Support for the author\n\n"
+        "Choose a plan:",
+        reply_markup=keyboards.premium_keyboard()
+    )
+
+@dp.callback_query(F.data == "feedback")
+async def feedback_ui(callback: CallbackQuery):
+    await callback.message.answer(
+        "👋 About the author (LincolnCox29)\n\n"
+        "Thanks for using my tg bot!\n\n"
+        "If you have suggestions, bug reports, partnership offers, or just want to get in touch, use the links below. ↓",
+        reply_markup=keyboards.feedback_menu()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("buy_premium"))
 async def buy_premium(callback: CallbackQuery):
+
+    data = callback.data
+    price = data.split(":")[1]
+    duration = data.split(":")[2]
 
     await bot.send_invoice(
         chat_id=callback.from_user.id,
         title="Premium Subscription",
-        description="30 days of Premium access",
-        payload="premium_30",
+        description=f"{duration} days of Premium access",
+        payload=f"premium_{duration}",
         currency="XTR",
         prices=[
             LabeledPrice(
-                label="Premium 30 days",
-                amount=1
+                label=f"Premium {duration} days",
+                amount=price
             )
         ]
     )
@@ -218,18 +253,20 @@ async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
 @dp.message(F.successful_payment)
 async def successful_payment(message: Message):
 
-    user = User(message.from_user.id)
+    user = User(message.from_user.id, R34_CLIENT)
 
     payment = message.successful_payment
 
-    match payment.invoice_payload:
-        case "premium_30":
-            user.sub_manager.add_subscription_days(30)
+    days = int(payment.invoice_payload.split("_")[1])
+
+    user.sub_manager.add_subscription_days(days)
 
     user.save_user_data()
 
     await message.answer(
-        "✅ Premium activated for 30 days!"
+        f"✅ Premium activated for {days} days!\n\n"
+        "Choose action:",
+        reply_markup=keyboards.main_menu()
     )
 
 # ===== Main =====
@@ -243,7 +280,9 @@ def machine_configuration():
 
 async def main():
     machine_configuration()
+    await R34_CLIENT.start()
     await dp.start_polling(bot)
+    await R34_CLIENT.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
