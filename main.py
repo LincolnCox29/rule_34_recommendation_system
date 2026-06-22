@@ -5,6 +5,7 @@ from user import User
 import torch
 import keyboards
 from rule_34_client import Rule_34_client
+from data_base import Data_base, DB
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
@@ -285,6 +286,7 @@ async def main():
         await dp.start_polling(bot)
     finally:
         await R34_CLIENT.close()
+        DB.close()
 
 if __name__ == "__main__":
     asyncio.run(main())

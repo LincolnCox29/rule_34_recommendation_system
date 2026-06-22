@@ -10,12 +10,14 @@ import asyncio
 from PIL import Image
 from io import BytesIO
 from subscription_manager import Subscription_manager
+from data_base import Data_base, DB
 
 R34_API_KEY = os.getenv("R34_API_KEY")
 print("R34_API_KEY: ", R34_API_KEY)
 R34_USER_ID = os.getenv("R34_USER_ID")
 print("R34_USER_ID: ", R34_USER_ID)
 CLIP: Clip = Clip()
+DB: Data_base = Data_base()
 
 CLIP_WEIGHT = 4.0
 
@@ -36,127 +38,58 @@ class User:
         self.r34_client = r34_client
         self.id = id
         self.sub_manager = Subscription_manager(id)
-        self.json_path = f"users\\{self.id}.json"
-        path = Path(self.json_path)
-        if path.is_file():
-            self.__load_json()
-        else:
-            self.__create_json()
-
-    def __create_json(self):
-        self.reactions = {}
-        self.posts_cache = {}
-        self.reaction_count = 0
-        self.like_tensor = torch.zeros(512, dtype=torch.float32, device=CLIP.device)
-        self.dislike_tensor = torch.zeros(512, dtype=torch.float32, device=CLIP.device)
-        self.config = {
-            "ai_filter": False
-        }
-        self.save_user_data()
-
-    def __load_json(self):
-        with open(self.json_path, "r", encoding="utf-8") as file:
-            data = json.load(file)
-        self.reactions = data["reactions"]
-        self.posts_cache = data["posts_cache"]
-        self.config = data["config"]
-        self.reaction_count = data["reaction_count"]
-        self.like_tensor = torch.tensor(
-            data["like_tensor"],
-            dtype=torch.float32,
-            device=CLIP.device
-        )
-        self.dislike_tensor = torch.tensor(
-            data["dislike_tensor"],
-            dtype=torch.float32,
-            device=CLIP.device
-        )
-        self.sub_manager.load(data)
-        
-    def save_user_data(self):
-        data = {
-            "reactions": self.reactions,
-            "posts_cache": self.posts_cache,
-            "config": self.config,
-            "reaction_count": self.reaction_count,
-            "like_tensor": self.like_tensor.cpu().tolist(),
-            "dislike_tensor": self.dislike_tensor.cpu().tolist()
-        }
-        data.update(self.sub_manager.get_data_for_save())
-        with open(self.json_path, "w", encoding="utf-8") as file:
-            json.dump(
-                data,
-                file,
-                ensure_ascii=False,
-                indent=4
-            )
+        self.posts_ids_cache = []
+        DB.create_user(self.id)
 
     def update_posts_cache(self, post):
-        self.posts_cache[str(post["id"])] = post
+        self.posts_ids_cache.append(int(post["id"]))
 
-        if len(self.posts_cache) > 200:
-            oldest_key = next(iter(self.posts_cache))
-            del self.posts_cache[oldest_key]
-
-        self.save_user_data()
+        if len(self.posts_ids_cache) > 100:
+            self.posts_ids_cache.pop(0)
 
     def __reaction(self, type, post):
         tags = post["tags"].split()
 
-        self.print_tags_weight(max=-3)
-
         for tag in tags:
-            if tag not in self.reactions:
-                self.reactions[tag] = {
-                    "dis": 0,
-                    "like": 0,
-                    "skip": 0
-                }
-            self.reactions[tag][type] += 1
+            if not DB.tag_exists(tag):
+                DB.create_tag(tag, self.id)
+            DB.reaction_on_tag(tag, self.id, type)
             
         if type != "skip":
             self.reaction_count += 1
 
-    def __update_like_tensor(self, post, alpha):
-
+    def __update_tensor(self, post, alpha, tensor_type):
         imageTensor = CLIP.get_post_tensor(post)
+        
+        tensor = DB.get_user_tensor(self.id, tensor_type)
 
-        self.like_tensor = self.like_tensor * 0.95 + imageTensor.squeeze() * alpha
+        tensor = tensor * 0.95 + imageTensor.squeeze() * alpha
+        tensor /= torch.norm(tensor)
 
-        self.like_tensor /= torch.norm(self.like_tensor)
-
-    def __update_dislike_tensor(self, post, alpha):
-
-        imageTensor = CLIP.get_post_tensor(post)
-
-        self.dislike_tensor = self.dislike_tensor * 0.95 + imageTensor.squeeze() * alpha
-
-        self.dislike_tensor /= torch.norm(self.dislike_tensor)
+        DB.update_user_tensor(self.id, tensor, tensor_type)
 
     def dislike_post(self, post):
-        self.__reaction("dis", post)
-        self.__update_dislike_tensor(post, 0.08)
-        self.save_user_data()
+        self.__reaction("dislikes", post)
+        self.__update_tensor(post, 0.08, "dislike")
+        DB.commit()
 
     def like_post(self, post):
-        self.__reaction("like", post)
-        self.__update_like_tensor(post, 0.05)
-        self.save_user_data()
+        self.__reaction("likes", post)
+        self.__update_tensor(post, 0.05, "like")
+        DB.commit()
 
     def skip_post(self, post):
-        self.__reaction("skip", post)
-        self.save_user_data()
+        self.__reaction("skips", post)
+        DB.commit()
 
     def __tag_weight(self, tag):
 
-        stats = self.reactions.get(tag)
+        stats = DB.get_tag_stats(tag, self.id)
 
         if not stats:
             return 0
 
-        likes = stats["like"]
-        dislikes = stats["dis"]
-        skips = stats["skip"]
+        likes, dislikes, skips = stats
 
         seen = likes + dislikes + skips
 
@@ -195,7 +128,7 @@ class User:
 
         for tag in tags:
 
-            if tag in self.reactions:
+            if DB.tag_exists(tag):
                 known += 1
             else:
                 unknown += 1
@@ -229,11 +162,11 @@ class User:
 
         return score
     
-    def __get_best_tags(self, limit=20):
+    def __get_best_tags(self, user_tags, limit=20):
 
         scored = []
 
-        for tag in self.reactions:
+        for tag in user_tags:
 
             weight = self.__tag_weight(tag)
 
@@ -247,9 +180,29 @@ class User:
 
         return scored[:limit]
     
+    def __get_worst_tags(self, user_tags, limit=20):
+        scored = []
+
+        for tag in user_tags:
+
+            weight = self.__tag_weight(tag)
+
+            if weight < 0:
+                scored.append((tag, weight))
+
+        scored.sort(
+            key=lambda x: x[1],
+            reverse=False
+        )
+
+        return scored[:limit]
+
+    
     def __build_query(self):
 
         query = []
+
+        user_tags = DB.get_user_tags(self.id)
 
         best_tags = self.__get_best_tags()
 
@@ -272,21 +225,13 @@ class User:
 
             query.extend(set(selected))
 
-        disliked = []
+        worst_tags = self.__get_worst_tags()
 
-        for tag in self.reactions:
-
-            weight = self.__tag_weight(tag)
-
-            if weight < -10:
-                disliked.append((tag, weight))
-
-        disliked.sort(key=lambda x: x[1])
-
-        query.extend(
-            f"-{tag}"
-            for tag, _ in disliked[:10]
-        )
+        if worst_tags:
+            query.extend(
+                f"-{tag}"
+                for tag, _ in worst_tags[:10]
+            )
 
         if self.config["ai_filter"]:
             query.extend([
@@ -356,7 +301,7 @@ class User:
                 await update_msg("🔄 Ranking posts")
 
                 for post in posts:
-                    if str(post["id"]) in self.posts_cache:
+                    if int(post["id"]) in self.posts_ids_cache:
                         continue
 
                     score = self.__score_post(post)
@@ -408,20 +353,6 @@ class User:
             if (ranging(post, best_post)):
                 best_post = post
         return best_post
-
-    def print_tags_weight(self, min = -999, max = 999):
-        weights = {}
-
-        for tag in self.reactions.keys():
-            w = self.__tag_weight(tag)
-            if w >= min or w <= max:
-                weights[tag] = w
-
-        sorted_by_val = dict(sorted(weights.items(), key=lambda x: x[1]))
-        
-        for tag in sorted_by_val.keys():
-            print(f"Weight of the \"{tag}\": ", weights[tag])
-        
 
     async def __session_download_image(self, session, url):
         try:
