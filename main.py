@@ -4,7 +4,8 @@ import os
 from user import User
 import torch
 import keyboards
-from rule_34_client import Rule_34_client
+from rule_34_client import R34_CLIENT
+from posts_pool import POSTS_POOL
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
@@ -21,8 +22,6 @@ dp = Dispatcher()
 
 R34_API_KEY = os.getenv("R34_API_KEY")
 R34_USER_ID = os.getenv("R34_USER_ID")
-
-R34_CLIENT = Rule_34_client()
 
 @dp.callback_query(F.data == "main_menu")
 async def back_to_main(callback: CallbackQuery):
@@ -281,6 +280,8 @@ def machine_configuration():
 async def main():
     machine_configuration()
     await R34_CLIENT.start()
+    await POSTS_POOL.init_pool()
+    await POSTS_POOL.refresh_pool_loop()
     try:
         await dp.start_polling(bot)
     finally:

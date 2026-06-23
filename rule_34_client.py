@@ -22,3 +22,5 @@ class Rule_34_client:
         ) as response:
 
             return await response.json()
+        
+R34_CLIENT: Rule_34_client = Rule_34_client()

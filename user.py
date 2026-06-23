@@ -10,6 +10,7 @@ import asyncio
 from PIL import Image
 from io import BytesIO
 from subscription_manager import Subscription_manager
+from posts_pool import POSTS_POOL
 
 R34_API_KEY = os.getenv("R34_API_KEY")
 print("R34_API_KEY: ", R34_API_KEY)
@@ -101,7 +102,7 @@ class User:
         self.save_user_data()
 
     def __reaction(self, type, post):
-        tags = post["tags"].split()
+        tags = post["tags"]
 
         self.print_tags_weight(max=-3)
 
@@ -185,7 +186,7 @@ class User:
 
         is_exploration_mod = True if random.random() < 0.15 else False
 
-        tags = post["tags"].split()
+        tags = post["tags"]
         post_score = post["score"]
 
         score = 0
@@ -308,82 +309,46 @@ class User:
                 current_loading_text = text
                 await loading_msg.edit_text(current_loading_text)
 
-        await update_msg("🔄 Building query")
+        await update_msg("🔄 Searching")
 
-        for i in range(5):
+        posts = POSTS_POOL.get_random_post(
+            500 if self.sub_manager.is_premium() else 100
+        )
 
-            if i < 4:
-                query = self.__build_query()
-            elif self.config["ai_filter"]:
-                query = []
-                query = (
-                    "-ai_generated " +
-                    "-stable_diffusion " +
-                    "-midjourney " +
-                    "-novelai " +
-                    "-ia_generated"
-                )
-            print("QUERY:", query)
+        try:
+            await update_msg("🔄 Ranking posts")
 
-            await update_msg("🔄 Searching", points=i if i < 4 else 3)
+            scored_posts = []
 
-            pid = random.randint(0, 100)
-
-            params = {
-                "page": "dapi",
-                "s": "post",
-                "q": "index",
-                "json": 1,
-                "limit": 200 if self.sub_manager.is_premium() else 100,
-                "pid": pid,
-                "tags": query + " score:>20",
-                "api_key": R34_API_KEY,
-                "user_id": R34_USER_ID
-            }
-
-            try:
-
-                posts = await self.r34_client.search(params)
-
-                if not isinstance(posts, list):
-                    raise TypeError("Bad API response")
-
-                if not posts:
+            for post in posts:
+                if str(post["id"]) in self.posts_cache:
                     continue
 
-                scored_posts = []
+                score = self.__score_post(post)
 
-                await update_msg("🔄 Ranking posts")
+                post["user_score"] = score
+                scored_posts.append(post)
 
-                for post in posts:
-                    if str(post["id"]) in self.posts_cache:
-                        continue
+            scored_posts.sort(
+                key=lambda p: p["user_score"],
+                reverse=True
+            )
 
-                    score = self.__score_post(post)
+            await update_msg("🔄 Finding best post")
 
-                    post["user_score"] = score
-                    scored_posts.append(post)
+            best_posts = scored_posts[:10]
 
-                scored_posts.sort(
-                    key=lambda p: p["user_score"],
-                    reverse=True
-                )
+            best_post = await self.__get_best_post(best_posts)
 
-                await update_msg("🔄 Finding best post")
+            self.sub_manager.register_post_view()
 
-                best_posts = scored_posts[:10]
+            await loading_msg.delete()
 
-                best_post = await self.__get_best_post(best_posts)
+            return best_post
 
-                self.sub_manager.register_post_view()
-
-                await loading_msg.delete()
-
-                return best_post
-
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
 
         return None
     

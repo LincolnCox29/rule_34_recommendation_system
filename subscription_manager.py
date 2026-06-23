@@ -1,7 +1,7 @@
 import time
 import os
 
-FREE_POSTS_PER_DAY = 50
+FREE_POSTS_PER_DAY = 30
 DAY = 86400
 ENDLESS_SUBS = []
 
