@@ -1,11 +1,11 @@
 import asyncio
 from dotenv import load_dotenv
 import os
-from user import User
+from user import User, get_user_cache
 import torch
 import keyboards
-from rule_34_client import Rule_34_client
-from data_base import Data_base, DB
+from rule_34_client import R34_CLIENT
+from data_base import DB
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
@@ -23,8 +23,6 @@ dp = Dispatcher()
 R34_API_KEY = os.getenv("R34_API_KEY")
 R34_USER_ID = os.getenv("R34_USER_ID")
 
-R34_CLIENT = Rule_34_client()
-
 @dp.callback_query(F.data == "main_menu")
 async def back_to_main(callback: CallbackQuery):
 
@@ -38,8 +36,9 @@ async def back_to_main(callback: CallbackQuery):
 @dp.callback_query(F.data == "turn_AI_filter")
 async def turn_AI_filter(callback: CallbackQuery):
 
-    user = User(callback.from_user.id, R34_CLIENT)
-    user.config["ai_filter"] = not user.config["ai_filter"]
+    user = get_user_cache(callback.from_user.id)
+
+    DB.turn_user_ai_filter(user.id)
 
     await callback.message.edit_text(
         "Settings",
@@ -53,7 +52,7 @@ async def turn_AI_filter(callback: CallbackQuery):
 @dp.callback_query(F.data == "settings")
 async def settings(callback: CallbackQuery):
 
-    user = User(callback.from_user.id, R34_CLIENT)
+    user = get_user_cache(callback.from_user.id)
 
     await callback.message.edit_text(
         "Settings",
@@ -77,7 +76,9 @@ async def start(message: Message):
 @dp.callback_query(F.data.startswith("to_feed"))
 async def open_feed(callback: CallbackQuery):
 
-    user = User(callback.from_user.id, R34_CLIENT)
+    user = get_user_cache(callback.from_user.id)
+
+    #DB.dump_user_to_file(user.id)
 
     if not await check_limit(callback, user):
         return
@@ -85,16 +86,21 @@ async def open_feed(callback: CallbackQuery):
     data = callback.data
     if ":" in data and "to_feed" in data:
         post_id = data.split(":")[1]
+        post = user.last_post
 
-        post = user.posts_cache.get(post_id)
-
-        if post:
+        if int(post_id) in user.posts_ids_cache:
+            await callback.message.edit_reply_markup(
+                reply_markup=None
+            )
             user.skip_post(post)
+        
 
     loading_msg = await callback.message.answer("🔄 Loading...")
     post = await user.next_post(loading_msg)
     if post == None:
         return
+
+    user.last_post = post
 
     user.update_posts_cache(post)
 
@@ -123,7 +129,7 @@ async def open_feed(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("like:"))
 async def like_post(callback: CallbackQuery):
 
-    user = User(callback.from_user.id, R34_CLIENT)
+    user = get_user_cache(callback.from_user.id)
 
     if not await check_limit(callback, user):
         return
@@ -140,8 +146,11 @@ async def like_post(callback: CallbackQuery):
         reply_markup=keyboards.feed_keyboard(post_id, liked=True)
     )
 
-    post = user.posts_cache.get(post_id)
-    user.like_post(post)
+    await callback.message.edit_reply_markup(
+        reply_markup=None
+    )
+
+    user.like_post(user.last_post)
 
     await callback.answer("Added to favorites")
 
@@ -150,7 +159,7 @@ async def like_post(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("dislike:"))
 async def dislike_post_ui(callback: CallbackQuery):
 
-    user = User(callback.from_user.id, R34_CLIENT)
+    user = get_user_cache(callback.from_user.id)
 
     if not await check_limit(callback, user):
         return
@@ -167,8 +176,11 @@ async def dislike_post_ui(callback: CallbackQuery):
         reply_markup=keyboards.feed_keyboard(post_id, disliked=True)
     )
 
-    post = user.posts_cache.get(post_id)
-    user.dislike_post(post)
+    user.dislike_post(user.last_post)
+
+    await callback.message.edit_reply_markup(
+        reply_markup=None
+    )
 
     await callback.answer("Less like this")
 
@@ -254,7 +266,7 @@ async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
 @dp.message(F.successful_payment)
 async def successful_payment(message: Message):
 
-    user = User(message.from_user.id, R34_CLIENT)
+    user = get_user_cache(message.from_user.id)
 
     payment = message.successful_payment
 
@@ -269,6 +281,8 @@ async def successful_payment(message: Message):
         "Choose action:",
         reply_markup=keyboards.main_menu()
     )
+
+
 
 # ===== Main =====
 

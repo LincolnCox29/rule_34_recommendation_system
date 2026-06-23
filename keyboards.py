@@ -1,4 +1,5 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CopyTextButton
+from data_base import DB
 
 def main_menu():
     return InlineKeyboardMarkup(
@@ -59,7 +60,7 @@ def feed_keyboard(post_id, liked=False, disliked=False):
 
 def settings_menu(user):
 
-    ai_filter = user.config["ai_filter"]
+    ai_filter = DB.get_user_ai_filter(user.id)
 
     return InlineKeyboardMarkup(
         inline_keyboard=[

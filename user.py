@@ -2,22 +2,21 @@ import json
 import math
 import os
 import random
-from pathlib import Path
-from clip import Clip
 import torch
 import aiohttp
 import asyncio
 from PIL import Image
 from io import BytesIO
 from subscription_manager import Subscription_manager
-from data_base import Data_base, DB
+from data_base import DB
+from clip import CLIP
+from rule_34_client import R34_CLIENT
+from urllib.parse import urlparse
 
 R34_API_KEY = os.getenv("R34_API_KEY")
 print("R34_API_KEY: ", R34_API_KEY)
 R34_USER_ID = os.getenv("R34_USER_ID")
 print("R34_USER_ID: ", R34_USER_ID)
-CLIP: Clip = Clip()
-DB: Data_base = Data_base()
 
 CLIP_WEIGHT = 4.0
 
@@ -39,7 +38,9 @@ class User:
         self.id = id
         self.sub_manager = Subscription_manager(id)
         self.posts_ids_cache = []
+        self.last_post = None
         DB.create_user(self.id)
+        USERS[id] = self
 
     def update_posts_cache(self, post):
         self.posts_ids_cache.append(int(post["id"]))
@@ -51,12 +52,11 @@ class User:
         tags = post["tags"].split()
 
         for tag in tags:
-            if not DB.tag_exists(tag):
-                DB.create_tag(tag, self.id)
+            DB.create_tag(tag, self.id)
             DB.reaction_on_tag(tag, self.id, type)
             
         if type != "skip":
-            self.reaction_count += 1
+            DB.inc_reaction_counter(self.id)
 
     def __update_tensor(self, post, alpha, tensor_type):
         imageTensor = CLIP.get_post_tensor(post)
@@ -114,7 +114,13 @@ class User:
 
         return weight
     
-    def __score_post(self, post):
+    def __score_post(self, post, user_tags):
+
+        file_url = post.get("file_url", "").lower()
+        path = urlparse(file_url).path
+
+        if not path.endswith((".jpg", ".jpeg", ".png")):
+            return -10000
 
         is_exploration_mod = True if random.random() < 0.15 else False
 
@@ -128,7 +134,7 @@ class User:
 
         for tag in tags:
 
-            if DB.tag_exists(tag):
+            if tag in user_tags:
                 known += 1
             else:
                 unknown += 1
@@ -198,13 +204,11 @@ class User:
         return scored[:limit]
 
     
-    def __build_query(self):
+    def __build_query(self, user_tags):
 
         query = []
 
-        user_tags = DB.get_user_tags(self.id)
-
-        best_tags = self.__get_best_tags()
+        best_tags = self.__get_best_tags(user_tags)
 
         if best_tags:
 
@@ -225,7 +229,7 @@ class User:
 
             query.extend(set(selected))
 
-        worst_tags = self.__get_worst_tags()
+        worst_tags = self.__get_worst_tags(user_tags, 3)
 
         if worst_tags:
             query.extend(
@@ -233,7 +237,7 @@ class User:
                 for tag, _ in worst_tags[:10]
             )
 
-        if self.config["ai_filter"]:
+        if DB.get_user_ai_filter(self.id):
             query.extend([
                 "-ai_generated",
                 "-stable_diffusion",
@@ -255,11 +259,13 @@ class User:
 
         await update_msg("🔄 Building query")
 
+        user_tags = DB.get_user_tags(self.id)
+
         for i in range(5):
 
             if i < 4:
-                query = self.__build_query()
-            elif self.config["ai_filter"]:
+                query = self.__build_query(user_tags)
+            elif DB.get_user_ai_filter(self.id):
                 query = []
                 query = (
                     "-ai_generated " +
@@ -304,7 +310,7 @@ class User:
                     if int(post["id"]) in self.posts_ids_cache:
                         continue
 
-                    score = self.__score_post(post)
+                    score = self.__score_post(post, user_tags)
 
                     post["user_score"] = score
                     scored_posts.append(post)
@@ -414,12 +420,23 @@ class User:
                 keepdim=True
             )
 
-            pos_similarities = embeddings @ self.like_tensor
+            pos_similarities = embeddings @ DB.get_user_tensor(self.id, "like")
 
-            neg_similarities = embeddings @ self.dislike_tensor
+            neg_similarities = embeddings @ DB.get_user_tensor(self.id, "dislike")
 
         for post, pos_sim, neg_sim in zip(valid_posts, pos_similarities, neg_similarities):
             post["similarity"] = (
                 pos_sim.item()
                 - neg_sim.item() * 0.5
             ) * CLIP_WEIGHT
+
+USERS = {}
+
+def get_user_cache(id):
+
+    user = USERS.get(id)
+
+    if user is None:
+        user = User(id, R34_CLIENT)
+
+    return user

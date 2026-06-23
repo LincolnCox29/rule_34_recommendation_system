@@ -1,43 +1,34 @@
 import time
 import os
+from data_base import DB
 
-FREE_POSTS_PER_DAY = 50
+FREE_POSTS_PER_DAY = 5
 DAY = 86400
+
 ENDLESS_SUBS = []
 
 class Subscription_manager:
 
-    def __init__(self, id):
-        self.id = id
-        if ENDLESS_SUBS == []:
+    def __init__(self, user_id):
+        self.id = user_id
+
+        if not ENDLESS_SUBS:
             self.__get_endless_subs()
-        self.subscription_end = 0.0
-        self.today_posts_counter = 0
-        self.today_posts_counter_reload_time = 0
 
-    def get_data_for_save(self):
-        return {
-            "subscription_end": self.subscription_end,
-            "today_posts_counter": self.today_posts_counter,
-            "today_posts_counter_reload_time": self.today_posts_counter_reload_time
-        }
+        self.subscription_end = DB.get_sub_end(self.id)
 
-    def load(self, json_data):
-        self.subscription_end = json_data["subscription_end"]
-        self.today_posts_counter = json_data["today_posts_counter"]
-        self.today_posts_counter_reload_time = json_data["today_posts_counter_reload_time"]
+    def __get_endless_subs(self):
+        global ENDLESS_SUBS
+
+        string = os.getenv("ENDLESS_SUBS", "")
+        ENDLESS_SUBS = string.split(",")
 
     def is_premium(self) -> bool:
         return (
-            (time.time() < self.subscription_end) or
-            (str(self.id) in ENDLESS_SUBS)
+            time.time() < self.subscription_end
+            or str(self.id) in ENDLESS_SUBS
         )
-    
-    def __get_endless_subs(self):
-        global ENDLESS_SUBS
-        string = os.getenv("ENDLESS_SUBS")
-        ENDLESS_SUBS = string.split(",")
-    
+
     def add_subscription_days(self, days: int):
 
         now = time.time()
@@ -47,26 +38,67 @@ class Subscription_manager:
 
         self.subscription_end += days * DAY
 
+        DB.update_sub_end(
+            self.id,
+            self.subscription_end
+        )
+
+        DB.commit()
+
     def reload_daily_limit(self):
 
         now = time.time()
 
-        if now >= self.today_posts_counter_reload_time:
-            self.today_posts_counter = 0
-            self.today_posts_counter_reload_time = now + DAY
+        reload_time = DB.get_today_posts_counter_reload_time(
+            self.id
+        )
+
+        if reload_time is None:
+            reload_time = 0
+
+        if now >= reload_time:
+
+            DB.set_today_posts_counter(
+                self.id,
+                0
+            )
+
+            DB.set_today_posts_counter_reload_time(
+                self.id,
+                now + DAY
+            )
+
+            DB.commit()
 
     def can_view_post(self) -> bool:
-
-        self.reload_daily_limit()
 
         if self.is_premium():
             return True
 
-        return self.today_posts_counter < FREE_POSTS_PER_DAY
-    
+        self.reload_daily_limit()
+
+        counter = DB.get_today_posts_counter(
+            self.id
+        )
+
+        return counter < FREE_POSTS_PER_DAY
+
     def register_post_view(self):
+
+        if self.is_premium():
+            return
 
         self.reload_daily_limit()
 
-        if not self.is_premium():
-            self.today_posts_counter += 1
+        counter = DB.get_today_posts_counter(
+            self.id
+        )
+
+        DB.set_today_posts_counter(
+            self.id,
+            counter + 1
+        )
+
+        print("COUNTER =", counter)
+
+        DB.commit()

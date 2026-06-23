@@ -2,7 +2,7 @@ import os
 
 import requests
 from PIL import Image
-from io import BytesIO
+from io import BytesIO, BytesIO
 import open_clip
 import torch
 
@@ -41,3 +41,19 @@ class Clip:
             imageTensor = self.model.encode_image(image)
 
         return imageTensor / imageTensor.norm(dim=-1, keepdim=True)
+    
+    def tensor_to_blob(self, tensor):
+
+        buffer = BytesIO()
+
+        torch.save(tensor.cpu(), buffer)
+
+        return buffer.getvalue()
+
+    def tensor_from_blob(self, blob):
+        return torch.load(
+            BytesIO(blob),
+            map_location="cpu"
+        )
+    
+CLIP: Clip = Clip()
