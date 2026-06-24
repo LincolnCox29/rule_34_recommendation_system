@@ -248,58 +248,59 @@ class User:
 
         return scored[:limit]
     
-    def __build_query(self):
+    async def post_like_this(self, ref_post, loading_msg=None, current_loading_text=""):
 
-        query = []
+        async def update_msg(text, points=3):
+            text += points * "."
+            nonlocal current_loading_text
+            if (loading_msg is not None and current_loading_text != text):
+                current_loading_text = text
+                await loading_msg.edit_text(current_loading_text)
 
-        best_tags = self.__get_best_tags()
+        await update_msg("🔄 Searching posts")
 
-        if best_tags:
+        posts = POSTS_POOL.get_random_post(1000)
 
-            tags = [tag for tag, _ in best_tags]
+        load_points = 0
+        most_likeness = posts[0]
+        most_likeness["likeness"] = 0
 
-            weights = [weight for _, weight in best_tags]
+        ref_tags = set(ref_post["tags"])
+        ref_embedding = CLIP.get_post_tensor(ref_post).squeeze(0)
 
-            positive_count = random.choices(
-                [1, 2],
-                weights=[80, 20]
-            )[0]
+        await update_msg("🔄 Similarity calculation")
 
-            selected = random.choices(
-                tags,
-                weights=weights,
-                k=positive_count
-            )
+        embeddings = torch.stack([
+            CLIP.get_post_tensor(post).squeeze(0)
+            for post in posts
+        ])
 
-            query.extend(set(selected))
+        sims = embeddings @ ref_embedding
 
-        disliked = []
+        for i, post in enumerate(posts):
+            if i % 50 == 0:
+                load_points += 1
+                await update_msg("🔄 Ranking posts", load_points)
+                if load_points == 3:
+                    load_points = 1
 
-        for tag in self.reactions:
+            post["likeness"] = 0
+            for tag in post["tags"]:
+                if tag in ref_tags:
 
-            weight = self.__tag_weight(tag)
+                    pop = TAGS_POP.get(tag, 100)
+                    rarity = 1 / math.log10(pop + 10)
+                    rarity = max(0.15, rarity)
 
-            if weight < -10:
-                disliked.append((tag, weight))
+                    post["likeness"] += 1 * rarity
 
-        disliked.sort(key=lambda x: x[1])
+            post["likeness"] += sims[i].item() * 10
 
-        query.extend(
-            f"-{tag}"
-            for tag, _ in disliked[:10]
-        )
+            if post["likeness"] > most_likeness["likeness"]:
+                most_likeness = post
 
-        if self.config["ai_filter"]:
-            query.extend([
-                "-ai_generated",
-                "-stable_diffusion",
-                "-midjourney",
-                "-novelai",
-                "-ia_generated"
-            ])
+        return most_likeness
 
-        return " ".join(query)
-    
     async def next_post(self, loading_msg=None, current_loading_text=""):
 
         async def update_msg(text, points=3):
@@ -356,7 +357,7 @@ class User:
 
         ranging = None
         if self.sub_manager.is_premium():
-            await self.__get_post_tensor_batch(best_posts)
+            await self.__calculate_similarities(best_posts)
             ranging = lambda post, best_post: (
                 best_post is None
                 or post["user_score"] + post["similarity"] >
@@ -386,73 +387,33 @@ class User:
         
         for tag in sorted_by_val.keys():
             print(f"Weight of the \"{tag}\": ", weights[tag])
-        
 
-    async def __session_download_image(self, session, url):
-        try:
-            async with session.get(url) as response:
-                if response.status != 200:
-                    return None
+    async def __calculate_similarities(self, posts):
 
-                data = await response.read()
-                return Image.open(BytesIO(data)).convert("RGB")
+        embeddings = []
 
-        except Exception:
-            return None
+        for post in posts:
 
-    async def __get_post_tensor_batch(self, posts):
+            tensor = CLIP.get_post_tensor(post)
 
-        urls = [
-            (
-                post.get("preview_url")
-                or post.get("sample_url")
-                or post.get("file_url")
-            )
-            for post in posts
-        ]
+            if tensor is None:
+                continue
 
-        connector = aiohttp.TCPConnector(limit=10)
+            embeddings.append(tensor.squeeze(0))
 
-        async with aiohttp.ClientSession(
-            connector=connector,
-            headers={"User-Agent": "Mozilla/5.0"}
-        ) as session:
-
-            images = await asyncio.gather(*[
-                self.__session_download_image(session, url)
-                for url in urls
-            ])
-
-        valid_images = []
-        valid_posts = []
-
-        for post, img in zip(posts, images):
-            if img is not None:
-                valid_images.append(img)
-                valid_posts.append(post)
-
-        if not valid_images:
+        if not embeddings:
             return
 
-        batch = torch.stack([
-            CLIP.preprocess(img)
-            for img in valid_images
-        ]).to(CLIP.device)
+        embeddings = torch.stack(embeddings)
 
-        with torch.no_grad():
+        pos_similarities = embeddings @ self.like_tensor
+        neg_similarities = embeddings @ self.dislike_tensor
 
-            embeddings = CLIP.model.encode_image(batch)
-
-            embeddings = embeddings / embeddings.norm(
-                dim=-1,
-                keepdim=True
-            )
-
-            pos_similarities = embeddings @ self.like_tensor
-
-            neg_similarities = embeddings @ self.dislike_tensor
-
-        for post, pos_sim, neg_sim in zip(valid_posts, pos_similarities, neg_similarities):
+        for post, pos_sim, neg_sim in zip(
+            posts,
+            pos_similarities,
+            neg_similarities
+        ):
             post["similarity"] = (
                 pos_sim.item()
                 - neg_sim.item() * 0.5

@@ -28,7 +28,7 @@ def main_menu():
         ]
     )
 
-def feed_keyboard(post_id, liked=False, disliked=False):
+def feed_keyboard(post_id, isSub, liked=False, disliked=False):
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -39,13 +39,19 @@ def feed_keyboard(post_id, liked=False, disliked=False):
                 ),
                 InlineKeyboardButton(
                     text="Skip",
-                    callback_data=f"to_feed:{post_id}"
+                    callback_data=f"skip:{post_id}"
                 )   
             ],
             [
                 InlineKeyboardButton(
                     text="🙈 Less like this" if disliked else "🐵 Less like this",
                     callback_data=f"dislike:{1 if disliked else 0}:{post_id}"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔍 Find a post like this" if isSub else "🔒 Find a post like this",
+                    callback_data=f"like_this:{post_id}"
                 ),
             ],
             [

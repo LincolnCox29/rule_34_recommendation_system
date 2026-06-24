@@ -26,18 +26,36 @@ class Clip:
 
     def get_post_tensor(self, post):
 
+        embedding = post.get("embedding")
+
+        if embedding is not None:
+            return torch.tensor(
+                embedding,
+                dtype=torch.float32,
+                device=self.device
+            ).unsqueeze(0)
+
         url = (
             post.get("preview_url")
             or post.get("sample_url")
             or post.get("file_url")
         )
 
-        print("Geting tensor of: ", url)
-        res = requests.get(url)
-        image = Image.open(BytesIO(res.content))
+        print("Calculating embedding:", url)
+
+        response = requests.get(url, timeout=20)
+        image = Image.open(BytesIO(response.content)).convert("RGB")
 
         image = self.preprocess(image).unsqueeze(0).to(self.device)
+
         with torch.no_grad():
             imageTensor = self.model.encode_image(image)
 
-        return imageTensor / imageTensor.norm(dim=-1, keepdim=True)
+        imageTensor = imageTensor / imageTensor.norm(
+            dim=-1,
+            keepdim=True
+        )
+
+        post["embedding"] = imageTensor.squeeze(0).cpu()
+
+        return imageTensor

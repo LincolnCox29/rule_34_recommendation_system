@@ -60,8 +60,6 @@ async def settings(callback: CallbackQuery):
 
     await callback.answer()
 
-# ===== Start =====
-
 @dp.message(F.text == "/start")
 async def start(message: Message):
 
@@ -70,27 +68,22 @@ async def start(message: Message):
         reply_markup=keyboards.main_menu()
     )
 
-# ===== Open Feed =====
-
 @dp.callback_query(F.data.startswith("to_feed"))
-async def open_feed(callback: CallbackQuery):
+async def open_feed(callback: CallbackQuery, like_this_post=None):
 
     user = User(callback.from_user.id, R34_CLIENT)
 
     if not await check_limit(callback, user):
         return
 
-    data = callback.data
-    if ":" in data and "to_feed" in data:
-        post_id = data.split(":")[1]
-
-        post = user.posts_cache.get(post_id)
-
-        if post:
-            user.skip_post(post)
-
     loading_msg = await callback.message.answer("🔄 Loading...")
-    post = await user.next_post(loading_msg)
+
+    post = None
+    if like_this_post is None:
+        post = user.next_post(loading_msg)
+    else:
+        post = user.post_like_this(like_this_post, loading_msg)
+
     if post == None:
         return
 
@@ -111,12 +104,13 @@ async def open_feed(callback: CallbackQuery):
     await callback.message.answer_photo(
         photo=image_url,
         caption= f"Score: {post['score']}\nTags: {formatted_tags}",
-        reply_markup=keyboards.feed_keyboard(str(post["id"]))
+        reply_markup=keyboards.feed_keyboard(
+            str(post["id"]), 
+            user.sub_manager.is_premium()
+        )
     )
 
     await callback.answer()
-
-# ===== Like =====
 
 @dp.callback_query(F.data.startswith("like:"))
 async def like_post(callback: CallbackQuery):
@@ -135,7 +129,11 @@ async def like_post(callback: CallbackQuery):
     print(post_id)
 
     await callback.message.edit_reply_markup(
-        reply_markup=keyboards.feed_keyboard(post_id, liked=True)
+        reply_markup=keyboards.feed_keyboard(
+            post_id, 
+            user.sub_manager.is_premium(), 
+            liked=True
+        )
     )
 
     post = user.posts_cache.get(post_id)
@@ -162,7 +160,11 @@ async def dislike_post_ui(callback: CallbackQuery):
     print("disliked: ", post_id)
 
     await callback.message.edit_reply_markup(
-        reply_markup=keyboards.feed_keyboard(post_id, disliked=True)
+        reply_markup=keyboards.feed_keyboard(
+            post_id, 
+            user.sub_manager.is_premium(),
+            disliked=True
+        )
     )
 
     post = user.posts_cache.get(post_id)
@@ -171,6 +173,35 @@ async def dislike_post_ui(callback: CallbackQuery):
     await callback.answer("Less like this")
 
     await open_feed(callback)
+
+@dp.callback_query(F.data.startswith("skip:"))
+async def skip_post(callback: CallbackQuery):
+
+    user = User(callback.from_user.id, R34_CLIENT)
+
+    if not await check_limit(callback, user):
+        return
+
+    data = callback.data
+
+    post_id = data.split(":")[1]
+    post = user.posts_cache.get(post_id)
+    if post:
+        user.skip_post(post)
+
+    await callback.answer()
+
+    await open_feed(callback)
+
+@dp.callback_query(F.data.startswith("like_this:"))
+async def find_post_like_this(callback: CallbackQuery):
+
+    user = User(callback.from_user.id, R34_CLIENT)
+
+    if user.sub_manager.is_premium():
+        await open_feed(callback, True)
+    else:
+        await premium_promotion(callback)
 
 async def check_limit(callback: CallbackQuery, user: User):
     if user.sub_manager.can_view_post():
@@ -267,8 +298,6 @@ async def successful_payment(message: Message):
         "Choose action:",
         reply_markup=keyboards.main_menu()
     )
-
-# ===== Main =====
 
 def machine_configuration():
     print("Torch:", torch.__version__)
