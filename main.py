@@ -1,7 +1,7 @@
 import asyncio
 from dotenv import load_dotenv
 import os
-from user import User
+from user import User, get_user
 import torch
 import keyboards
 from rule_34_client import R34_CLIENT
@@ -36,7 +36,7 @@ async def back_to_main(callback: CallbackQuery):
 @dp.callback_query(F.data == "turn_AI_filter")
 async def turn_AI_filter(callback: CallbackQuery):
 
-    user = User(callback.from_user.id, R34_CLIENT)
+    user = get_user(callback.from_user.id)
     user.config["ai_filter"] = not user.config["ai_filter"]
 
     await callback.message.edit_text(
@@ -51,7 +51,7 @@ async def turn_AI_filter(callback: CallbackQuery):
 @dp.callback_query(F.data == "settings")
 async def settings(callback: CallbackQuery):
 
-    user = User(callback.from_user.id, R34_CLIENT)
+    user = get_user(callback.from_user.id)
 
     await callback.message.edit_text(
         "Settings",
@@ -71,7 +71,7 @@ async def start(message: Message):
 @dp.callback_query(F.data.startswith("to_feed"))
 async def open_feed(callback: CallbackQuery, like_this_post=None):
 
-    user = User(callback.from_user.id, R34_CLIENT)
+    user = get_user(callback.from_user.id)
 
     if not await check_limit(callback, user):
         return
@@ -80,9 +80,9 @@ async def open_feed(callback: CallbackQuery, like_this_post=None):
 
     post = None
     if like_this_post is None:
-        post = user.next_post(loading_msg)
+        post = await user.next_post(loading_msg)
     else:
-        post = user.post_like_this(like_this_post, loading_msg)
+        post = await user.post_like_this(like_this_post, loading_msg)
 
     if post == None:
         return
@@ -98,24 +98,34 @@ async def open_feed(callback: CallbackQuery, like_this_post=None):
 
     formatted_tags = " ".join(
         f"#{tag}"
-        for tag in post["tags"].split()[:20]
+        for tag in post["tags"][:20]
     )
 
-    await callback.message.answer_photo(
-        photo=image_url,
-        caption= f"Score: {post['score']}\nTags: {formatted_tags}",
-        reply_markup=keyboards.feed_keyboard(
-            str(post["id"]), 
-            user.sub_manager.is_premium()
+    if image_url.endswith((".webm", ".mp4")):
+        await callback.message.answer_video(
+            video=image_url,
+            caption= f"Score: {post['score']}\nTags: {formatted_tags}",
+            reply_markup=keyboards.feed_keyboard(
+                str(post["id"]), 
+                user.sub_manager.is_premium()
+            )
         )
-    )
+    else:
+        await callback.message.answer_photo(
+            photo=image_url,
+            caption= f"Score: {post['score']}\nTags: {formatted_tags}",
+            reply_markup=keyboards.feed_keyboard(
+                str(post["id"]), 
+                user.sub_manager.is_premium()
+            )
+        )
 
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("like:"))
 async def like_post(callback: CallbackQuery):
 
-    user = User(callback.from_user.id, R34_CLIENT)
+    user = get_user(callback.from_user.id)
 
     if not await check_limit(callback, user):
         return
@@ -146,7 +156,7 @@ async def like_post(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("dislike:"))
 async def dislike_post_ui(callback: CallbackQuery):
 
-    user = User(callback.from_user.id, R34_CLIENT)
+    user = get_user(callback.from_user.id)
 
     if not await check_limit(callback, user):
         return
@@ -177,7 +187,7 @@ async def dislike_post_ui(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("skip:"))
 async def skip_post(callback: CallbackQuery):
 
-    user = User(callback.from_user.id, R34_CLIENT)
+    user = get_user(callback.from_user.id)
 
     if not await check_limit(callback, user):
         return
@@ -196,10 +206,13 @@ async def skip_post(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("like_this:"))
 async def find_post_like_this(callback: CallbackQuery):
 
-    user = User(callback.from_user.id, R34_CLIENT)
+    user = get_user(callback.from_user.id)
+
+    post_id = callback.data.split(":")[1]
+    post = user.posts_cache.get(post_id)
 
     if user.sub_manager.is_premium():
-        await open_feed(callback, True)
+        await open_feed(callback, post)
     else:
         await premium_promotion(callback)
 
@@ -283,7 +296,7 @@ async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
 @dp.message(F.successful_payment)
 async def successful_payment(message: Message):
 
-    user = User(message.from_user.id, R34_CLIENT)
+    user = get_user(message.from_user.id)
 
     payment = message.successful_payment
 
@@ -310,7 +323,9 @@ async def main():
     machine_configuration()
     await R34_CLIENT.start()
     await POSTS_POOL.init_pool()
-    await POSTS_POOL.refresh_pool_loop()
+    asyncio.create_task(
+        POSTS_POOL.refresh_pool_loop()
+    )
     try:
         await dp.start_polling(bot)
     finally:

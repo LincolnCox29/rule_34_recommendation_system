@@ -3,20 +3,23 @@ import math
 import os
 import random
 from pathlib import Path
-from clip import Clip
 import torch
-import aiohttp
-import asyncio
-from PIL import Image
-from io import BytesIO
 from subscription_manager import Subscription_manager
 from posts_pool import POSTS_POOL
+from rule_34_client import R34_CLIENT
+from clip import CLIP
 
 R34_API_KEY = os.getenv("R34_API_KEY")
 print("R34_API_KEY: ", R34_API_KEY)
 R34_USER_ID = os.getenv("R34_USER_ID")
 print("R34_USER_ID: ", R34_USER_ID)
-CLIP: Clip = Clip()
+
+AI_TAGS = [
+    "ai_generated",
+    "stable diffusion",
+    "ai",
+    "ai assisted"
+]
 
 CLIP_WEIGHT = 4.0
 
@@ -36,6 +39,7 @@ class User:
     def __init__(self, id, r34_client):
         self.r34_client = r34_client
         self.id = id
+        self.posts_cache = {}
         self.sub_manager = Subscription_manager(id)
         self.json_path = f"users\\{self.id}.json"
         path = Path(self.json_path)
@@ -46,7 +50,7 @@ class User:
 
     def __create_json(self):
         self.reactions = {}
-        self.posts_cache = {}
+        self.viewed_post_ids = []
         self.reaction_count = 0
         self.like_tensor = torch.zeros(512, dtype=torch.float32, device=CLIP.device)
         self.dislike_tensor = torch.zeros(512, dtype=torch.float32, device=CLIP.device)
@@ -59,7 +63,7 @@ class User:
         with open(self.json_path, "r", encoding="utf-8") as file:
             data = json.load(file)
         self.reactions = data["reactions"]
-        self.posts_cache = data["posts_cache"]
+        self.viewed_post_ids = data.get("viewed_post_ids", [])
         self.config = data["config"]
         self.reaction_count = data["reaction_count"]
         self.like_tensor = torch.tensor(
@@ -77,11 +81,11 @@ class User:
     def save_user_data(self):
         data = {
             "reactions": self.reactions,
-            "posts_cache": self.posts_cache,
             "config": self.config,
             "reaction_count": self.reaction_count,
             "like_tensor": self.like_tensor.cpu().tolist(),
-            "dislike_tensor": self.dislike_tensor.cpu().tolist()
+            "dislike_tensor": self.dislike_tensor.cpu().tolist(),
+            "viewed_post_ids": self.viewed_post_ids
         }
         data.update(self.sub_manager.get_data_for_save())
         with open(self.json_path, "w", encoding="utf-8") as file:
@@ -94,10 +98,14 @@ class User:
 
     def update_posts_cache(self, post):
         self.posts_cache[str(post["id"])] = post
+        self.viewed_post_ids.append(int(post["id"]))
 
         if len(self.posts_cache) > 200:
             oldest_key = next(iter(self.posts_cache))
             del self.posts_cache[oldest_key]
+
+        if len(self.viewed_post_ids) > 1000:
+            self.viewed_post_ids.pop(0)
 
         self.save_user_data()
 
@@ -228,6 +236,9 @@ class User:
             unknown_ratio = unknown / len(tags)
             score += unknown_ratio * 2
 
+        if post["id"] in self.viewed_post_ids:
+            score *= 0.1
+
         return score
     
     def __get_best_tags(self, limit=20):
@@ -235,7 +246,6 @@ class User:
         scored = []
 
         for tag in self.reactions:
-
             weight = self.__tag_weight(tag)
 
             if weight > 0:
@@ -246,7 +256,7 @@ class User:
             reverse=True
         )
 
-        return scored[:limit]
+        return [tag for tag, _ in scored[:limit]]
     
     async def post_like_this(self, ref_post, loading_msg=None, current_loading_text=""):
 
@@ -259,7 +269,10 @@ class User:
 
         await update_msg("🔄 Searching posts")
 
-        posts = POSTS_POOL.get_random_post(1000)
+        posts = POSTS_POOL.get_random_post(
+            200,
+            excluded_tags= AI_TAGS if self.config["ai_filter"] else None
+        )
 
         load_points = 0
         most_likeness = posts[0]
@@ -268,7 +281,7 @@ class User:
         ref_tags = set(ref_post["tags"])
         ref_embedding = CLIP.get_post_tensor(ref_post).squeeze(0)
 
-        await update_msg("🔄 Similarity calculation")
+        await update_msg("🔄 Load embeddings")
 
         embeddings = torch.stack([
             CLIP.get_post_tensor(post).squeeze(0)
@@ -276,6 +289,8 @@ class User:
         ])
 
         sims = embeddings @ ref_embedding
+
+        await update_msg("🔄 Similarity calculation")
 
         for i, post in enumerate(posts):
             if i % 50 == 0:
@@ -313,7 +328,8 @@ class User:
         await update_msg("🔄 Searching")
 
         posts = POSTS_POOL.get_random_post(
-            500 if self.sub_manager.is_premium() else 100
+            500 if self.sub_manager.is_premium() else 100,
+            excluded_tags= AI_TAGS if self.config["ai_filter"] else None
         )
 
         try:
@@ -337,7 +353,7 @@ class User:
 
             await update_msg("🔄 Finding best post")
 
-            best_posts = scored_posts[:10]
+            best_posts = scored_posts[:30]
 
             best_post = await self.__get_best_post(best_posts)
 
@@ -418,3 +434,11 @@ class User:
                 pos_sim.item()
                 - neg_sim.item() * 0.5
             ) * CLIP_WEIGHT
+
+USERS = {}
+
+def get_user(user_id):
+    if user_id not in USERS:
+        USERS[user_id] = User(user_id, R34_CLIENT)
+
+    return USERS[user_id]

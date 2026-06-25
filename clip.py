@@ -28,6 +28,9 @@ class Clip:
 
         embedding = post.get("embedding")
 
+        if isinstance(embedding, torch.Tensor):
+            return embedding.unsqueeze(0)
+
         if embedding is not None:
             return torch.tensor(
                 embedding,
@@ -59,3 +62,5 @@ class Clip:
         post["embedding"] = imageTensor.squeeze(0).cpu()
 
         return imageTensor
+    
+CLIP: Clip = Clip()
