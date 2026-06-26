@@ -1,4 +1,5 @@
 import asyncio
+import random
 from dotenv import load_dotenv
 import os
 from user import User, get_user
@@ -26,7 +27,11 @@ R34_USER_ID = os.getenv("R34_USER_ID")
 @dp.callback_query(F.data == "main_menu")
 async def back_to_main(callback: CallbackQuery):
 
+    user = get_user(callback.from_user.id)
+
     await callback.message.answer(
+        f"⭐ Premium Status: {"🟢 Active" if user.sub_manager.is_premium() else "🔴 Inactive"}",
+        f"⏳ Expires in: {user.sub_manager.get_sub_expire_str()}" if user.sub_manager.is_premium() else "",
         "Choose action:",
         reply_markup=keyboards.main_menu()
     )
@@ -63,7 +68,11 @@ async def settings(callback: CallbackQuery):
 @dp.message(F.text == "/start")
 async def start(message: Message):
 
+    user = get_user(message.from_user.id)
+
     await message.answer(
+        f"⭐ Premium Status: {"🟢 Active" if user.sub_manager.is_premium() else "🔴 Inactive"}",
+        f"⏳ Expires in: {user.sub_manager.get_sub_expire_str()}" if user.sub_manager.is_premium() else "",
         "Choose action:",
         reply_markup=keyboards.main_menu()
     )
@@ -80,7 +89,15 @@ async def open_feed(callback: CallbackQuery, like_this_post=None):
 
     post = None
     if like_this_post is None:
-        post = await user.next_post(loading_msg)
+        if random.random() < 0.15:
+            ref = random.choices(
+                user.liked_posts,
+                weights=range(1, len(user.liked_posts) + 1),
+                k=1
+            )[0]
+            post = await user.post_like_this(ref, loading_msg)
+        else:
+            post = await user.next_post(loading_msg)
     else:
         post = await user.post_like_this(like_this_post, loading_msg)
 

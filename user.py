@@ -8,6 +8,7 @@ from subscription_manager import Subscription_manager
 from posts_pool import POSTS_POOL
 from rule_34_client import R34_CLIENT
 from clip import CLIP
+import copy
 
 R34_API_KEY = os.getenv("R34_API_KEY")
 print("R34_API_KEY: ", R34_API_KEY)
@@ -41,7 +42,7 @@ class User:
         self.id = id
         self.posts_cache = {}
         self.sub_manager = Subscription_manager(id)
-        self.json_path = f"users\\{self.id}.json"
+        self.json_path = Path("users") / f"{self.id}.json"
         path = Path(self.json_path)
         if path.is_file():
             self.__load_json()
@@ -51,6 +52,7 @@ class User:
     def __create_json(self):
         self.reactions = {}
         self.viewed_post_ids = []
+        self.liked_posts = []
         self.reaction_count = 0
         self.like_tensor = torch.zeros(512, dtype=torch.float32, device=CLIP.device)
         self.dislike_tensor = torch.zeros(512, dtype=torch.float32, device=CLIP.device)
@@ -64,6 +66,7 @@ class User:
             data = json.load(file)
         self.reactions = data["reactions"]
         self.viewed_post_ids = data.get("viewed_post_ids", [])
+        self.liked_posts = data.get("liked_posts", [])
         self.config = data["config"]
         self.reaction_count = data["reaction_count"]
         self.like_tensor = torch.tensor(
@@ -85,7 +88,8 @@ class User:
             "reaction_count": self.reaction_count,
             "like_tensor": self.like_tensor.cpu().tolist(),
             "dislike_tensor": self.dislike_tensor.cpu().tolist(),
-            "viewed_post_ids": self.viewed_post_ids
+            "viewed_post_ids": self.viewed_post_ids,
+            "liked_posts": self.liked_posts
         }
         data.update(self.sub_manager.get_data_for_save())
         with open(self.json_path, "w", encoding="utf-8") as file:
@@ -150,6 +154,13 @@ class User:
     def like_post(self, post):
         self.__reaction("like", post)
         self.__update_like_tensor(post, 0.05)
+
+        self.liked_posts.append(
+            self.__make_post_snapshot(post)
+        )
+        while len(self.liked_posts) > 20:
+            self.liked_posts.pop(0)
+
         self.save_user_data()
 
     def skip_post(self, post):
@@ -275,20 +286,9 @@ class User:
         )
 
         load_points = 0
-        most_likeness = posts[0]
-        most_likeness["likeness"] = 0
 
         ref_tags = set(ref_post["tags"])
         ref_embedding = CLIP.get_post_tensor(ref_post).squeeze(0)
-
-        await update_msg("🔄 Load embeddings")
-
-        embeddings = torch.stack([
-            CLIP.get_post_tensor(post).squeeze(0)
-            for post in posts
-        ])
-
-        sims = embeddings @ ref_embedding
 
         await update_msg("🔄 Similarity calculation")
 
@@ -300,6 +300,10 @@ class User:
                     load_points = 1
 
             post["likeness"] = 0
+
+            if int(post["id"]) in self.viewed_post_ids:
+                continue
+
             for tag in post["tags"]:
                 if tag in ref_tags:
 
@@ -309,9 +313,35 @@ class User:
 
                     post["likeness"] += 1 * rarity
 
-            post["likeness"] += sims[i].item() * 10
+        posts.sort(
+            key=lambda post: post["likeness"],
+            reverse=True
+        )
+        top_posts = posts[:20]
 
-            if post["likeness"] > most_likeness["likeness"]:
+        await update_msg("🔄 Load embeddings")
+        embeddings = torch.stack([
+            CLIP.get_post_tensor(post).squeeze(0)
+            for post in top_posts
+        ])
+        sims = embeddings @ ref_embedding
+
+        most_likeness = None
+        await update_msg("🔄 Finding best post")
+        for i, post in enumerate(top_posts):
+            if sims[i].item() > 0.98:
+                continue
+
+            tag_score = post["likeness"]
+            clip_score = sims[i].item()
+
+            post["likeness"] = (
+                tag_score * 0.6 +
+                clip_score * 8
+            )
+
+            if (most_likeness is None 
+                or post["likeness"] > most_likeness["likeness"]):
                 most_likeness = post
 
         return most_likeness
@@ -434,6 +464,19 @@ class User:
                 pos_sim.item()
                 - neg_sim.item() * 0.5
             ) * CLIP_WEIGHT
+
+    def __make_post_snapshot(self, post):
+        snapshot = copy.deepcopy(post)
+
+        for field in (
+            "embedding",
+            "similarity",
+            "user_score",
+            "likeness",
+        ):
+            snapshot.pop(field, None)
+
+        return snapshot
 
 USERS = {}
 

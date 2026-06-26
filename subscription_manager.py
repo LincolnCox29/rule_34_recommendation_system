@@ -70,3 +70,12 @@ class Subscription_manager:
 
         if not self.is_premium():
             self.today_posts_counter += 1
+
+    def get_sub_expire_str(self):
+        remaining = int(self.subscription_end - time.time())
+
+        days = remaining // 86400
+        hours = (remaining % 86400) // 3600
+        minutes = (remaining % 3600) // 60
+
+        return f"{days} d. {hours} h. {minutes} min."

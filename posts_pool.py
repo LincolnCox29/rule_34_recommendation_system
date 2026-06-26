@@ -17,7 +17,6 @@ class Posts_poll:
 
     def __init__(self):
         self.pool = []
-        self.pool_size = 0
         self.ids = set()
         self.download_semaphore = asyncio.Semaphore(8)
 
@@ -61,7 +60,6 @@ class Posts_poll:
                         "score": post["score"],
                         "tags": tags
                     })
-                    self.pool_size += 1
 
             except Exception as e:
                 import traceback
@@ -82,14 +80,12 @@ class Posts_poll:
             print(f"\rСalculate pool embeddings [min: {(lead_time/60):.2f}]", end="", flush=True)
         print("\nСalculate pool embeddings: DONE")
 
-        without_embeddings = sum(
-            1 for p in self.pool
-            if "embedding" not in p
-        )
-
-        print(
-            f"Posts without embeddings: {without_embeddings}/{self.pool_size}"
-        )
+        before = len(self.pool)
+        self.pool = [
+            p for p in self.pool
+            if "embedding" in p
+        ]
+        print(f"Deleted posts without embeddings: {before - len(self.pool)}")
 
     async def __download_image(self, session, url):
 
@@ -172,11 +168,14 @@ class Posts_poll:
             post["embedding"] = emb.cpu()
 
     async def refresh_pool_loop(self):
-
         while True:
             await asyncio.sleep(86400)
 
-            await POSTS_POOL.init_pool()
+            new_pool = Posts_poll()
+            await new_pool.init_pool()
+
+            self.pool = new_pool.pool
+            self.ids = new_pool.ids
             
     def get_random_post(self, limit=100, excluded_tags=None):
 
