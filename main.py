@@ -15,6 +15,12 @@ from aiogram.types import (
     LabeledPrice,
     PreCheckoutQuery
 )
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramNetworkError,
+    TelegramServerError,
+    TelegramRetryAfter,
+)
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -29,9 +35,12 @@ async def back_to_main(callback: CallbackQuery):
 
     user = get_user(callback.from_user.id)
 
+    status = f"⭐ Premium Status: {'🟢 Active' if user.sub_manager.is_premium() else '🔴 Inactive'}\n"
+    exp = f"⏳ Expires in: {user.sub_manager.get_sub_expire_str()}\n" if user.sub_manager.is_premium() else " "  
+
     await callback.message.answer(
-        f"⭐ Premium Status: {"🟢 Active" if user.sub_manager.is_premium() else "🔴 Inactive"}",
-        f"⏳ Expires in: {user.sub_manager.get_sub_expire_str()}" if user.sub_manager.is_premium() else "",
+        f"{status}"
+        f"{exp}"
         "Choose action:",
         reply_markup=keyboards.main_menu()
     )
@@ -70,15 +79,18 @@ async def start(message: Message):
 
     user = get_user(message.from_user.id)
 
+    status = f"⭐ Premium Status: {'🟢 Active' if user.sub_manager.is_premium() else '🔴 Inactive'}\n"
+    exp = f"⏳ Expires in: {user.sub_manager.get_sub_expire_str()}\n" if user.sub_manager.is_premium() else " "  
+
     await message.answer(
-        f"⭐ Premium Status: {"🟢 Active" if user.sub_manager.is_premium() else "🔴 Inactive"}",
-        f"⏳ Expires in: {user.sub_manager.get_sub_expire_str()}" if user.sub_manager.is_premium() else "",
+        f"{status}"
+        f"{exp}"
         "Choose action:",
         reply_markup=keyboards.main_menu()
     )
 
 @dp.callback_query(F.data.startswith("to_feed"))
-async def open_feed(callback: CallbackQuery, like_this_post=None):
+async def open_feed(callback: CallbackQuery, like_this_post=None, retries=3):
 
     user = get_user(callback.from_user.id)
 
@@ -89,7 +101,7 @@ async def open_feed(callback: CallbackQuery, like_this_post=None):
 
     post = None
     if like_this_post is None:
-        if random.random() < 0.15:
+        if len(user.liked_posts) > 0 and random.random() < 0.15:
             ref = random.choices(
                 user.liked_posts,
                 weights=range(1, len(user.liked_posts) + 1),
@@ -117,17 +129,7 @@ async def open_feed(callback: CallbackQuery, like_this_post=None):
         f"#{tag}"
         for tag in post["tags"][:20]
     )
-
-    if image_url.endswith((".webm", ".mp4")):
-        await callback.message.answer_video(
-            video=image_url,
-            caption= f"Score: {post['score']}\nTags: {formatted_tags}",
-            reply_markup=keyboards.feed_keyboard(
-                str(post["id"]), 
-                user.sub_manager.is_premium()
-            )
-        )
-    else:
+    try:
         await callback.message.answer_photo(
             photo=image_url,
             caption= f"Score: {post['score']}\nTags: {formatted_tags}",
@@ -136,6 +138,31 @@ async def open_feed(callback: CallbackQuery, like_this_post=None):
                 user.sub_manager.is_premium()
             )
         )
+    except (TelegramNetworkError, TelegramServerError, TelegramRetryAfter) as e:
+        print(f"NetworkError for post {post['id']}: {e}")
+        while retries > 0:
+            try:
+                print(f"Retry load post: {post['id']}")
+                delay = 2 ** retries
+                await asyncio.sleep(delay)
+                await callback.message.answer_photo(
+                    photo=image_url,
+                    caption= f"Score: {post['score']}\nTags: {formatted_tags}",
+                    reply_markup=keyboards.feed_keyboard(
+                        str(post["id"]), 
+                        user.sub_manager.is_premium()
+                    )
+                )
+                await callback.answer()
+                return
+            except (TelegramNetworkError, TelegramServerError, TelegramRetryAfter):
+                retries -= 1
+    except TelegramBadRequest as e:
+        print(f"Bad request for post {post['id']}: {e}")
+        if (retries > 0):
+            print(f"Try to find any post...")
+            await open_feed(callback, like_this_post, retries - 1)
+            return
 
     await callback.answer()
 

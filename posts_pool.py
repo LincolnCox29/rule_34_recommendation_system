@@ -85,7 +85,9 @@ class Posts_poll:
             p for p in self.pool
             if "embedding" in p
         ]
-        print(f"Deleted posts without embeddings: {before - len(self.pool)}")
+        pool_size = len(self.pool)
+        print(f"Deleted posts without embeddings: {before - pool_size}")
+        print(f"Posts pool size: {pool_size}")
 
     async def __download_image(self, session, url):
 

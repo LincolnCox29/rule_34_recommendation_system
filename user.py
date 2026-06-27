@@ -82,6 +82,12 @@ class User:
         self.sub_manager.load(data)
         
     def save_user_data(self):
+
+        self.liked_posts = [
+            self.__make_post_snapshot(post)
+            for post in self.liked_posts
+        ]
+
         data = {
             "reactions": self.reactions,
             "config": self.config,
@@ -466,16 +472,14 @@ class User:
             ) * CLIP_WEIGHT
 
     def __make_post_snapshot(self, post):
-        snapshot = copy.deepcopy(post)
-
-        for field in (
-            "embedding",
-            "similarity",
-            "user_score",
-            "likeness",
-        ):
-            snapshot.pop(field, None)
-
+        snapshot = {
+            "preview_url": post["preview_url"],
+            "sample_url":  post["sample_url"],
+            "file_url":  post["file_url"],
+            "id":  post["id"],
+            "score":  post["score"],
+            "tags":  post["tags"]
+        }
         return snapshot
 
 USERS = {}
