@@ -1,6 +1,7 @@
 import asyncio
 from io import BytesIO
 import os
+from pathlib import Path
 import random
 import time
 from PIL import Image
@@ -181,11 +182,16 @@ class Posts_poll:
             
     def get_random_post(self, limit=100, excluded_tags=None):
 
+        def is_video(post):
+            ext = Path(post["file_url"]).suffix.lower()
+            return ext in {".webm", ".mp4"}
+
         excluded_tags = set(excluded_tags or [])
 
         filtered_pool = [
             post for post in self.pool
             if not excluded_tags.intersection(post["tags"])
+            and not is_video
         ]
 
         return random.sample(
