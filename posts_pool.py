@@ -23,7 +23,11 @@ class Posts_poll:
 
     async def init_pool(self):
 
-        for i in range(0,5):
+        def is_video(post):
+            ext = Path(post["file_url"]).suffix.lower()
+            return ext in {".webm", ".mp4"}
+
+        for i in range(0,20):
             try:
                 print(f"\rLoading pool page {i+1}/100", end="", flush=True)
                 params = {
@@ -48,7 +52,7 @@ class Posts_poll:
 
                 for post in posts:
 
-                    if post["id"] in self.ids:
+                    if post["id"] in self.ids or is_video(post):
                         continue
                     self.ids.add(post["id"])
 
@@ -182,16 +186,11 @@ class Posts_poll:
             
     def get_random_post(self, limit=100, excluded_tags=None):
 
-        def is_video(post):
-            ext = Path(post["file_url"]).suffix.lower()
-            return ext in {".webm", ".mp4"}
-
         excluded_tags = set(excluded_tags or [])
 
         filtered_pool = [
             post for post in self.pool
             if not excluded_tags.intersection(post["tags"])
-            and not is_video
         ]
 
         return random.sample(
