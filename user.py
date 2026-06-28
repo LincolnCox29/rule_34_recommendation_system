@@ -3,6 +3,7 @@ import math
 import os
 import random
 from pathlib import Path
+import shutil
 import torch
 from subscription_manager import Subscription_manager
 from posts_pool import POSTS_POOL
@@ -43,6 +44,8 @@ class User:
         self.posts_cache = {}
         self.sub_manager = Subscription_manager(id)
         self.json_path = Path("users") / f"{self.id}.json"
+        self.tmp_path = f"{self.json_path}.tmp"
+        self.bak_path = f"{self.json_path}.bak"
         path = Path(self.json_path)
         if path.is_file():
             self.__load_json()
@@ -62,8 +65,19 @@ class User:
         self.save_user_data()
 
     def __load_json(self):
-        with open(self.json_path, "r", encoding="utf-8") as file:
-            data = json.load(file)
+        try:
+            with open(self.json_path, "r", encoding="utf-8") as file:
+                data = json.load(file)
+        except Exception as e:
+            print(f"JSON with user id {self.id} was corrupted. Load backup: {e}")
+            try:
+                shutil.copy2(self.bak_path, self.json_path)
+                self.__load_json()
+            except Exception as e:
+                print(f"Backup with user id {self.id} also corrupted: {e}")
+                self.__create_json()
+                return
+            return
         self.reactions = data["reactions"]
         self.viewed_post_ids = data.get("viewed_post_ids", [])
         self.liked_posts = data.get("liked_posts", [])
@@ -98,13 +112,20 @@ class User:
             "liked_posts": self.liked_posts
         }
         data.update(self.sub_manager.get_data_for_save())
-        with open(self.json_path, "w", encoding="utf-8") as file:
-            json.dump(
-                data,
-                file,
-                ensure_ascii=False,
-                indent=4
-            )
+        try:
+            if os.path.exists(self.json_path):
+                shutil.copy2(self.json_path, self.bak_path)
+            with open(self.tmp_path, "w", encoding="utf-8") as file:
+                json.dump(
+                    data,
+                    file,
+                    ensure_ascii=False,
+                    indent=4
+                )
+        except:
+            print(f"Save denied to corrupted json with user id {self.id}")
+            return
+        os.replace(self.tmp_path, self.json_path)
 
     def update_posts_cache(self, post):
         self.posts_cache[str(post["id"])] = post
