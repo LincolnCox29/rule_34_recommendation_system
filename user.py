@@ -9,7 +9,6 @@ from subscription_manager import Subscription_manager
 from posts_pool import POSTS_POOL
 from rule_34_client import R34_CLIENT
 from clip import CLIP
-import copy
 
 R34_API_KEY = os.getenv("R34_API_KEY")
 print("R34_API_KEY: ", R34_API_KEY)
@@ -22,6 +21,13 @@ AI_TAGS = [
     "ai",
     "ai assisted"
 ]
+
+POST_LIKE_THIS_TAGS_CNT = 1000
+POST_LIKE_THIS_CLIP_CNT = 50
+
+NEXT_POST_TAGS_CNT = 500
+NEXT_POST_SUB_TAGS_CNT = 1000
+NEXT_POST_CLIP_CNT = 50 
 
 CLIP_WEIGHT = 4.0
 
@@ -308,7 +314,7 @@ class User:
         await update_msg("🔄 Searching posts")
 
         posts = POSTS_POOL.get_random_post(
-            200,
+            POST_LIKE_THIS_TAGS_CNT,
             excluded_tags= AI_TAGS if self.config["ai_filter"] else None
         )
 
@@ -344,7 +350,7 @@ class User:
             key=lambda post: post["likeness"],
             reverse=True
         )
-        top_posts = posts[:20]
+        top_posts = posts[:POST_LIKE_THIS_CLIP_CNT]
 
         await update_msg("🔄 Load embeddings")
         embeddings = torch.stack([
@@ -385,7 +391,7 @@ class User:
         await update_msg("🔄 Searching")
 
         posts = POSTS_POOL.get_random_post(
-            500 if self.sub_manager.is_premium() else 100,
+            NEXT_POST_SUB_TAGS_CNT if self.sub_manager.is_premium() else NEXT_POST_TAGS_CNT,
             excluded_tags= AI_TAGS if self.config["ai_filter"] else None
         )
 
@@ -410,7 +416,7 @@ class User:
 
             await update_msg("🔄 Finding best post")
 
-            best_posts = scored_posts[:30]
+            best_posts = scored_posts[:NEXT_POST_CLIP_CNT]
 
             best_post = await self.__get_best_post(best_posts)
 
