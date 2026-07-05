@@ -101,7 +101,7 @@ async def open_feed(callback: CallbackQuery, like_this_post=None, retries=3):
 
     post = None
     if like_this_post is None:
-        if len(user.liked_posts) > 0 and random.random() < 0.15:
+        if len(user.liked_posts) > 0 and random.random() < 0.90:
             ref = random.choices(
                 user.liked_posts,
                 weights=range(1, len(user.liked_posts) + 1),
@@ -112,6 +112,8 @@ async def open_feed(callback: CallbackQuery, like_this_post=None, retries=3):
             post = await user.next_post(loading_msg)
     else:
         post = await user.post_like_this(like_this_post, loading_msg)
+
+    await loading_msg.delete()
 
     if post == None:
         return

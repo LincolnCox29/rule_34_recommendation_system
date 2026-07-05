@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import random
 import time
+import math
 from PIL import Image
 
 import aiohttp
@@ -13,6 +14,8 @@ from clip import CLIP
 
 R34_API_KEY = os.getenv("R34_API_KEY")
 R34_USER_ID = os.getenv("R34_USER_ID")
+
+POOL_SIZE: int = int(os.getenv("POOL_SIZE"))
 
 class Posts_poll:
 
@@ -27,9 +30,10 @@ class Posts_poll:
             ext = Path(post["file_url"]).suffix.lower()
             return ext in {".webm", ".mp4"}
 
-        for i in range(0,20):
+        pages = math.ceil(POOL_SIZE / 300)
+        for i in range(0,pages):
             try:
-                print(f"\rLoading pool page {i+1}/100", end="", flush=True)
+                print(f"\rLoading pool page: {i+1}/{pages}", end="", flush=True)
                 params = {
                     "page": "dapi",
                     "s": "post",
@@ -82,7 +86,7 @@ class Posts_poll:
 
             lead_time += time.perf_counter() - start
 
-            print(f"\rСalculate pool embeddings [min: {(lead_time/60):.2f}]", end="", flush=True)
+            print(f"\rСalculate pool embeddings: [min: {(lead_time/60):.2f}]", end="", flush=True)
         print("\nСalculate pool embeddings: DONE")
 
         before = len(self.pool)
@@ -184,18 +188,37 @@ class Posts_poll:
             self.pool = new_pool.pool
             self.ids = new_pool.ids
             
-    def get_random_post(self, limit=100, excluded_tags=None):
+    def get_random_post(self, limit=100, excluded_tags=None, included_tags=None):
 
         excluded_tags = set(excluded_tags or [])
+        included_tags = set(included_tags or [])
 
-        filtered_pool = [
+        preferred = [
             post for post in self.pool
             if not excluded_tags.intersection(post["tags"])
+            and included_tags.intersection(post["tags"])
         ]
 
-        return random.sample(
-            filtered_pool,
-            min(limit, len(filtered_pool))
+        if len(preferred) >= limit:
+            return random.sample(preferred, limit)
+
+        result = preferred.copy()
+
+        used_ids = {p["id"] for p in result}
+
+        other = [
+            post for post in self.pool
+            if post["id"] not in used_ids
+            and not excluded_tags.intersection(post["tags"])
+        ]
+
+        result.extend(
+            random.sample(
+                other,
+                min(limit - len(result), len(other))
+            )
         )
+
+        return result
 
 POSTS_POOL: Posts_poll = Posts_poll()

@@ -4,11 +4,13 @@ import os
 import random
 from pathlib import Path
 import shutil
+import time
 import torch
 from subscription_manager import Subscription_manager
 from posts_pool import POSTS_POOL
 from rule_34_client import R34_CLIENT
 from clip import CLIP
+import heapq
 
 R34_API_KEY = os.getenv("R34_API_KEY")
 print("R34_API_KEY: ", R34_API_KEY)
@@ -22,14 +24,17 @@ AI_TAGS = [
     "ai assisted"
 ]
 
-POST_LIKE_THIS_TAGS_CNT = 1000
-POST_LIKE_THIS_CLIP_CNT = 50
+POST_LIKE_THIS_TAGS_CNT = 4000
+POST_LIKE_THIS_CLIP_CNT = 250
 
-NEXT_POST_TAGS_CNT = 500
-NEXT_POST_SUB_TAGS_CNT = 1000
-NEXT_POST_CLIP_CNT = 50 
+NEXT_POST_TAGS_CNT = 3000
+NEXT_POST_SUB_TAGS_CNT = 10000
+NEXT_POST_CLIP_CNT = 1000
 
-CLIP_WEIGHT = 4.0
+LIKED_POSTS_MEM = 30
+DISLIKED_POSTS_MEM = 15
+
+CLIP_WEIGHT = 6.0
 
 TAGS_POP = None
 def load_tags_pop():
@@ -62,65 +67,89 @@ class User:
         self.reactions = {}
         self.viewed_post_ids = []
         self.liked_posts = []
+        self.disliked_posts = []
         self.reaction_count = 0
-        self.like_tensor = torch.zeros(512, dtype=torch.float32, device=CLIP.device)
-        self.dislike_tensor = torch.zeros(512, dtype=torch.float32, device=CLIP.device)
+
         self.config = {
             "ai_filter": False
         }
+
         self.save_user_data()
 
     def __load_json(self):
         try:
             with open(self.json_path, "r", encoding="utf-8") as file:
                 data = json.load(file)
+
         except Exception as e:
             print(f"JSON with user id {self.id} was corrupted. Load backup: {e}")
+
             try:
                 shutil.copy2(self.bak_path, self.json_path)
                 self.__load_json()
             except Exception as e:
                 print(f"Backup with user id {self.id} also corrupted: {e}")
                 self.__create_json()
-                return
             return
+
         self.reactions = data["reactions"]
         self.viewed_post_ids = data.get("viewed_post_ids", [])
-        self.liked_posts = data.get("liked_posts", [])
         self.config = data["config"]
         self.reaction_count = data["reaction_count"]
-        self.like_tensor = torch.tensor(
-            data["like_tensor"],
-            dtype=torch.float32,
-            device=CLIP.device
-        )
-        self.dislike_tensor = torch.tensor(
-            data["dislike_tensor"],
-            dtype=torch.float32,
-            device=CLIP.device
-        )
+
+        self.liked_posts = data.get("liked_posts", [])
+        self.disliked_posts = data.get("disliked_posts", [])
+
+        for post in self.liked_posts + self.disliked_posts:   
+            if "embedding" in post:
+                post["embedding"] = torch.tensor(
+                    post["embedding"],
+                    dtype=torch.float32,
+                    device=CLIP.device
+                )
+
         self.sub_manager.load(data)
         
     def save_user_data(self):
 
-        self.liked_posts = [
-            self.__make_post_snapshot(post)
-            for post in self.liked_posts
-        ]
+        def posts_to_snapshots(posts):
+            
+            snapshots = []
+
+            for post in posts:
+
+                snapshot = self.__make_post_snapshot(post)
+
+                if "embedding" in snapshot:
+                    snapshot["embedding"] = (
+                        snapshot["embedding"]
+                        .cpu()
+                        .tolist()
+                    )
+
+                snapshots.append(snapshot)
+            
+            return snapshots
+
+        liked_posts = posts_to_snapshots(self.liked_posts)
+        disliked_posts = posts_to_snapshots(self.disliked_posts)
 
         data = {
             "reactions": self.reactions,
             "config": self.config,
             "reaction_count": self.reaction_count,
-            "like_tensor": self.like_tensor.cpu().tolist(),
-            "dislike_tensor": self.dislike_tensor.cpu().tolist(),
             "viewed_post_ids": self.viewed_post_ids,
-            "liked_posts": self.liked_posts
+            "liked_posts": liked_posts,
+            "disliked_posts": disliked_posts 
         }
+
         data.update(self.sub_manager.get_data_for_save())
+
         try:
+
             if os.path.exists(self.json_path):
                 shutil.copy2(self.json_path, self.bak_path)
+
             with open(self.tmp_path, "w", encoding="utf-8") as file:
                 json.dump(
                     data,
@@ -128,9 +157,11 @@ class User:
                     ensure_ascii=False,
                     indent=4
                 )
-        except:
+
+        except Exception:
             print(f"Save denied to corrupted json with user id {self.id}")
             return
+
         os.replace(self.tmp_path, self.json_path)
 
     def update_posts_cache(self, post):
@@ -163,35 +194,27 @@ class User:
         if type != "skip":
             self.reaction_count += 1
 
-    def __update_like_tensor(self, post, alpha):
-
-        imageTensor = CLIP.get_post_tensor(post)
-
-        self.like_tensor = self.like_tensor * 0.95 + imageTensor.squeeze() * alpha
-
-        self.like_tensor /= torch.norm(self.like_tensor)
-
-    def __update_dislike_tensor(self, post, alpha):
-
-        imageTensor = CLIP.get_post_tensor(post)
-
-        self.dislike_tensor = self.dislike_tensor * 0.95 + imageTensor.squeeze() * alpha
-
-        self.dislike_tensor /= torch.norm(self.dislike_tensor)
-
     def dislike_post(self, post):
         self.__reaction("dis", post)
-        self.__update_dislike_tensor(post, 0.08)
+
+        self.disliked_posts.append(
+            self.__make_post_snapshot(post)
+        )
+
+        while len(self.disliked_posts) > DISLIKED_POSTS_MEM:
+            self.disliked_posts.pop(0)
+
         self.save_user_data()
 
     def like_post(self, post):
+
         self.__reaction("like", post)
-        self.__update_like_tensor(post, 0.05)
 
         self.liked_posts.append(
             self.__make_post_snapshot(post)
         )
-        while len(self.liked_posts) > 20:
+
+        while len(self.liked_posts) > LIKED_POSTS_MEM:
             self.liked_posts.pop(0)
 
         self.save_user_data()
@@ -321,36 +344,41 @@ class User:
         load_points = 0
 
         ref_tags = set(ref_post["tags"])
+        viewed_post_ids_set = set(self.viewed_post_ids)
         ref_embedding = CLIP.get_post_tensor(ref_post).squeeze(0)
 
         await update_msg("🔄 Similarity calculation")
 
-        for i, post in enumerate(posts):
-            if i % 50 == 0:
+        iteration_time: float = 0
+        for post in posts:
+            start_time = time.time()
+            if iteration_time > 1.5:
+                iteration_time = 0
                 load_points += 1
                 await update_msg("🔄 Ranking posts", load_points)
                 if load_points == 3:
-                    load_points = 1
+                    load_points = 0
 
-            post["likeness"] = 0
+            likeness = 0
 
-            if int(post["id"]) in self.viewed_post_ids:
+            if int(post["id"]) in viewed_post_ids_set:
+                post["likeness"] = likeness
                 continue
 
             for tag in post["tags"]:
                 if tag in ref_tags:
+                    likeness += 1
+                else:
+                    likeness -= 0.1
+            post["likeness"] = likeness
+            end_time = time.time()
+            iteration_time += end_time - start_time
 
-                    pop = TAGS_POP.get(tag, 100)
-                    rarity = 1 / math.log10(pop + 10)
-                    rarity = max(0.15, rarity)
-
-                    post["likeness"] += 1 * rarity
-
-        posts.sort(
-            key=lambda post: post["likeness"],
-            reverse=True
+        top_posts = heapq.nlargest(
+            POST_LIKE_THIS_CLIP_CNT,
+            posts,
+            key=lambda p: p["likeness"]
         )
-        top_posts = posts[:POST_LIKE_THIS_CLIP_CNT]
 
         await update_msg("🔄 Load embeddings")
         embeddings = torch.stack([
@@ -422,8 +450,6 @@ class User:
 
             self.sub_manager.register_post_view()
 
-            await loading_msg.delete()
-
             return best_post
 
         except Exception as e:
@@ -439,8 +465,8 @@ class User:
             await self.__calculate_similarities(best_posts)
             ranging = lambda post, best_post: (
                 best_post is None
-                or post["user_score"] + post["similarity"] >
-                best_post["user_score"] + best_post.get("similarity", 0)
+                or post["user_score"] + post["like_similarity"] - post["dislike_similarity"] * 2 >
+                best_post["user_score"] + best_post.get("like_similarity", 0) - best_post.get("dislike_similarity", 0) * 2 
             )
         else:
             ranging = lambda post, best_post: (
@@ -469,44 +495,65 @@ class User:
 
     async def __calculate_similarities(self, posts):
 
-        embeddings = []
+        for post in posts:
+            post["like_similarity"] = 0
+            post["dislike_similarity"] = 0
+
+        if not self.liked_posts:
+            return
+
+        post_embeddings = []
+        valid_posts = []
 
         for post in posts:
 
-            tensor = CLIP.get_post_tensor(post)
+            emb = CLIP.get_post_tensor(post)
 
-            if tensor is None:
+            if emb is None:
                 continue
 
-            embeddings.append(tensor.squeeze(0))
+            post_embeddings.append(emb.squeeze(0))
+            valid_posts.append(post)
 
-        if not embeddings:
+        if not post_embeddings:
             return
 
-        embeddings = torch.stack(embeddings)
+        liked_embeddings = torch.stack([
+            post["embedding"]
+            for post in self.liked_posts
+        ])
+        disliked_embeddings = torch.stack([
+            post["embedding"]
+            for post in self.disliked_posts
+        ])
 
-        pos_similarities = embeddings @ self.like_tensor
-        neg_similarities = embeddings @ self.dislike_tensor
+        post_embeddings = torch.stack(post_embeddings)
 
-        for post, pos_sim, neg_sim in zip(
-            posts,
-            pos_similarities,
-            neg_similarities
-        ):
-            post["similarity"] = (
-                pos_sim.item()
-                - neg_sim.item() * 0.5
-            ) * CLIP_WEIGHT
+        like_similarities = post_embeddings @ liked_embeddings.T
+        dislike_similarities = post_embeddings @ disliked_embeddings.T
+
+        max_like_similarity = like_similarities.max(dim=1).values
+        max_dislike_similarity = dislike_similarities.max(dim=1).values
+
+        for post, sim in zip(valid_posts, max_like_similarity):
+            post["like_similarity"] = sim.item() * CLIP_WEIGHT
+        for post, sim in zip(valid_posts, max_dislike_similarity):
+            post["dislike_similarity"] = sim.item() * CLIP_WEIGHT
 
     def __make_post_snapshot(self, post):
+
         snapshot = {
             "preview_url": post["preview_url"],
-            "sample_url":  post["sample_url"],
-            "file_url":  post["file_url"],
-            "id":  post["id"],
-            "score":  post["score"],
-            "tags":  post["tags"]
+            "sample_url": post["sample_url"],
+            "file_url": post["file_url"],
+            "id": post["id"],
+            "score": post["score"],
+            "tags": post["tags"],
         }
+
+        if "embedding" in post:
+            snapshot["embedding"] = post["embedding"].clone()
+
         return snapshot
 
 USERS = {}
