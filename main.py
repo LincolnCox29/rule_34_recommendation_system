@@ -1,5 +1,4 @@
 import asyncio
-import random
 from dotenv import load_dotenv
 import os
 from user import User, get_user
@@ -7,6 +6,7 @@ import torch
 import keyboards
 from rule_34_client import R34_CLIENT
 from posts_pool import POSTS_POOL
+from log_filter import enable_log_filter
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
@@ -354,6 +354,7 @@ def machine_configuration():
         print("GPU:", torch.cuda.get_device_name(0))
 
 async def main():
+    enable_log_filter()
     machine_configuration()
     await R34_CLIENT.start()
     await POSTS_POOL.init_pool()
