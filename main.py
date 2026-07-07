@@ -92,26 +92,14 @@ async def start(message: Message):
 @dp.callback_query(F.data.startswith("to_feed"))
 async def open_feed(callback: CallbackQuery, like_this_post=None, retries=3):
 
-    user = get_user(callback.from_user.id)
+    user: User = get_user(callback.from_user.id)
 
     if not await check_limit(callback, user):
         return
 
     loading_msg = await callback.message.answer("🔄 Loading...")
 
-    post = None
-    if like_this_post is None:
-        if len(user.liked_posts) > 0 and random.random() < 0.90:
-            ref = random.choices(
-                user.liked_posts,
-                weights=range(1, len(user.liked_posts) + 1),
-                k=1
-            )[0]
-            post = await user.post_like_this(ref, loading_msg)
-        else:
-            post = await user.next_post(loading_msg)
-    else:
-        post = await user.post_like_this(like_this_post, loading_msg)
+    post = await user.get_next_post(loading_msg=loading_msg, like_this=like_this_post)
 
     await loading_msg.delete()
 

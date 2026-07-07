@@ -73,6 +73,8 @@ class Subscription_manager:
 
     def get_sub_expire_str(self):
         remaining = int(self.subscription_end - time.time())
+        if remaining < 0:
+            return "∞ d. ∞ h. ∞ min."
 
         days = remaining // 86400
         hours = (remaining % 86400) // 3600

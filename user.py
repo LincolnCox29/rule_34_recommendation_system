@@ -24,12 +24,14 @@ AI_TAGS = [
     "ai assisted"
 ]
 
-POST_LIKE_THIS_TAGS_CNT = 4000
-POST_LIKE_THIS_CLIP_CNT = 250
+POST_LIKE_THIS_TAGS_CNT = 10000
+POST_LIKE_THIS_CLIP_CNT = 500
 
 NEXT_POST_TAGS_CNT = 3000
 NEXT_POST_SUB_TAGS_CNT = 10000
 NEXT_POST_CLIP_CNT = 1000
+
+DISLIKE_WEIGHT = 8
 
 LIKED_POSTS_MEM = 30
 DISLIKED_POSTS_MEM = 15
@@ -555,6 +557,123 @@ class User:
             snapshot["embedding"] = post["embedding"].clone()
 
         return snapshot
+    
+    async def get_next_post(self, like_this=None, loading_msg=None, current_loading_text=""):
+
+        async def update_msg(text, points=3):
+            text += points * "."
+            nonlocal current_loading_text
+            if (loading_msg is not None and current_loading_text != text):
+                current_loading_text = text
+                await loading_msg.edit_text(current_loading_text)
+
+        await update_msg("🔄 Searching")
+
+        posts = POSTS_POOL.get_random_post(
+            NEXT_POST_SUB_TAGS_CNT if self.sub_manager.is_premium() else NEXT_POST_TAGS_CNT,
+            excluded_tags= AI_TAGS if self.config["ai_filter"] else None
+        )
+
+        if like_this == None:
+            like_this = random.choices(
+                self.liked_posts,
+                weights=range(1, len(self.liked_posts) + 1),
+                k=1
+            )[0]
+
+        try:
+            await update_msg("🔄 Ranking posts")
+
+            ref_tags = set(like_this["tags"])
+            viewed_post_ids_set = set(self.viewed_post_ids)
+            ref_embedding = CLIP.get_post_tensor(like_this).squeeze(0)
+
+            await update_msg("🔄 Similarity calculation")
+
+            load_points = 0
+            iteration_time: float = 0
+            for post in posts:
+                start_time = time.time()
+                if iteration_time > 1.5:
+                    iteration_time = 0
+                    load_points += 1
+                    await update_msg("🔄 Ranking posts", load_points)
+                    if load_points == 3:
+                        load_points = 0
+
+                likeness = 0
+
+                if int(post["id"]) in viewed_post_ids_set:
+                    post["likeness"] = likeness
+                    continue
+
+                for tag in post["tags"]:
+                    if tag in ref_tags:
+                        likeness += 1
+                    else:
+                        likeness -= 0.1
+                post["likeness"] = likeness
+                end_time = time.time()
+                iteration_time += end_time - start_time
+
+            top_posts = heapq.nlargest(
+                POST_LIKE_THIS_CLIP_CNT,
+                posts,
+                key=lambda p: p["likeness"]
+            )
+
+            await update_msg("🔄 Load embeddings")
+
+            embeddings = torch.stack([
+                CLIP.get_post_tensor(post).squeeze(0)
+                for post in top_posts
+            ])
+            sims_like = embeddings @ ref_embedding
+
+            disliked_embeddings = torch.stack([
+                post["embedding"]
+                for post in self.disliked_posts
+            ])
+            sims_dislike = (embeddings @ disliked_embeddings.T).max(dim=1).values
+
+            await update_msg("🔄 Finding best post")
+            for i, post in enumerate(top_posts):
+
+                tag_score = post["likeness"]
+                sims_like_score = sims_like[i].item()
+                sims_dislike_score = sims_dislike[i].item()
+
+                post["likeness"] = (
+                    tag_score * 0.6 +
+                    sims_like_score * 8 -
+                    sims_dislike_score * 8
+                )
+
+            top_20 = heapq.nlargest(
+                20,
+                top_posts,
+                key=lambda p: p["likeness"]
+            )
+            top_20.sort(key=lambda p: p["likeness"], reverse=True)
+
+            weights = [
+                100,70,50,35,25,
+                18,14,11,9,8,
+                7,6,5,4,3,
+                2,2,1,1,1
+            ]
+
+            return random.choices(
+                top_20,
+                weights=weights,
+                k=1
+            )[0]
+        
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+
+        return None
 
 USERS = {}
 
