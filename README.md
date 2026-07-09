@@ -167,12 +167,39 @@ Go inside the project directory:
 cd rule_34_recommendation_system
 ```
 
-Install dependencies:
+## Installing dependencies
+
+Install all required Python packages:
 
 ```bash
 pip install -r requirements.txt
 ```
 
+### Install PyTorch (required)
+
+PyTorch is **not included** in `requirements.txt` because the installation depends on your hardware.
+
+#### NVIDIA GPU (CUDA)
+
+If you have an NVIDIA GPU, install the CUDA version of PyTorch.
+
+Example for **CUDA 12.8**:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu128
+```
+
+If you use a different CUDA version, visit the official PyTorch installation page:
+
+https://pytorch.org/get-started/locally/
+
+#### CPU only
+
+If you don't have an NVIDIA GPU, install the CPU version:
+
+```bash
+pip install torch
+```
 ---
 
 # Rule34 API
