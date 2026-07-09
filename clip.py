@@ -5,8 +5,7 @@ from PIL import Image
 from io import BytesIO
 import open_clip
 import torch
-
-DEVICE = os.getenv("DEVICE")
+from env import DEVICE
 
 class Clip:
     def __init__(self):

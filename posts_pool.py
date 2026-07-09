@@ -1,21 +1,16 @@
 import asyncio
 from io import BytesIO
-import os
 from pathlib import Path
+from env import R34_API_KEY, R34_USER_ID, POOL_SIZE
 import random
 import time
 import math
 from PIL import Image
-
+from env import try_getenv
 import aiohttp
 import torch
 from rule_34_client import R34_CLIENT
 from clip import CLIP
-
-R34_API_KEY = os.getenv("R34_API_KEY")
-R34_USER_ID = os.getenv("R34_USER_ID")
-
-POOL_SIZE: int = int(os.getenv("POOL_SIZE"))
 
 class Posts_poll:
 

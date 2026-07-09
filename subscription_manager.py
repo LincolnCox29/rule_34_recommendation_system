@@ -1,5 +1,6 @@
 import time
 import os
+from env import ENDLESS_SUBS
 
 FREE_POSTS_PER_DAY = 30
 DAY = 86400
@@ -9,8 +10,8 @@ class Subscription_manager:
 
     def __init__(self, id):
         self.id = id
-        if ENDLESS_SUBS == []:
-            self.__get_endless_subs()
+        if ENDLESS_SUBS is not list:
+            ENDLESS_SUBS = [] if ENDLESS_SUBS == None else ENDLESS_SUBS.split(",")
         self.subscription_end = 0.0
         self.today_posts_counter = 0
         self.today_posts_counter_reload_time = 0
@@ -32,11 +33,6 @@ class Subscription_manager:
             (time.time() < self.subscription_end) or
             (str(self.id) in ENDLESS_SUBS)
         )
-    
-    def __get_endless_subs(self):
-        global ENDLESS_SUBS
-        string = os.getenv("ENDLESS_SUBS")
-        ENDLESS_SUBS = string.split(",")
     
     def add_subscription_days(self, days: int):
 

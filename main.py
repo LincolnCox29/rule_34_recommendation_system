@@ -1,6 +1,6 @@
 import asyncio
 from dotenv import load_dotenv
-import os
+from env import BOT_TOKEN
 from user import User, get_user
 import torch
 import keyboards
@@ -23,12 +23,8 @@ from aiogram.exceptions import (
 )
 load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
-
-R34_API_KEY = os.getenv("R34_API_KEY")
-R34_USER_ID = os.getenv("R34_USER_ID")
 
 @dp.callback_query(F.data == "main_menu")
 async def back_to_main(callback: CallbackQuery):
@@ -259,8 +255,6 @@ async def check_limit(callback: CallbackQuery, user: User):
         "🚫 Daily free limit reached.\n\n"
         "You've used all free posts available today.\n\n"
         "⭐ Premium unlocks:\n"
-        "- Unlimited feed\n"
-        "- AI image recommendations (CLIP)\n"
         "- Better post ranking\n"
         "- Faster discovery of new content\n"
         "- No daily limits\n"
