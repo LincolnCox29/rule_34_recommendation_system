@@ -1,154 +1,104 @@
 import asyncio
 from dotenv import load_dotenv
-import os
-from user import User
+from env import BOT_TOKEN
+from user import User, get_user
+import torch
+import keyboards
+from rule_34_client import R34_CLIENT
+from posts_pool import POSTS_POOL
+from log_filter import enable_log_filter
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message,
     CallbackQuery,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton
+    LabeledPrice,
+    PreCheckoutQuery
+)
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramNetworkError,
+    TelegramServerError,
+    TelegramRetryAfter,
 )
 load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
-
-R34_API_KEY = os.getenv("R34_API_KEY")
-R34_USER_ID = os.getenv("R34_USER_ID")
-
-def main_menu():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="To feed",
-                    callback_data="feed"
-                ),
-                InlineKeyboardButton(
-                    text="Settings",
-                    callback_data="settings"
-                )
-            ]
-        ]
-    )
 
 @dp.callback_query(F.data == "main_menu")
 async def back_to_main(callback: CallbackQuery):
 
+    user = get_user(callback.from_user.id)
+
+    status = f"⭐ Premium Status: {'🟢 Active' if user.sub_manager.is_premium() else '🔴 Inactive'}\n"
+    exp = f"⏳ Expires in: {user.sub_manager.get_sub_expire_str()}\n" if user.sub_manager.is_premium() else " "  
+
     await callback.message.answer(
+        f"{status}"
+        f"{exp}"
         "Choose action:",
-        reply_markup=main_menu()
+        reply_markup=keyboards.main_menu()
     )
 
     await callback.answer()
 
-def feed_keyboard(post_id, liked=False, disliked=False):
-
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="❤️ Liked" if liked else "🤍 Like",
-                    callback_data=f"like:{1 if liked else 0}:{post_id}"
-                ),
-                InlineKeyboardButton(
-                    text="Next",
-                    callback_data=f"feed:{post_id}"
-                )   
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🙈 Less like this" if disliked else "🐵 Less like this",
-                    callback_data=f"dislike:{1 if disliked else 0}:{post_id}"
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="Back",
-                    callback_data="main_menu"
-                ), 
-            ]
-        ]
-    )
-
 @dp.callback_query(F.data == "turn_AI_filter")
 async def turn_AI_filter(callback: CallbackQuery):
 
-    user = User(callback.from_user.id)
+    user = get_user(callback.from_user.id)
     user.config["ai_filter"] = not user.config["ai_filter"]
 
     await callback.message.edit_text(
         "Settings",
-        reply_markup=settings_menu(user)
+        reply_markup=keyboards.settings_menu(user)
     )
 
     user.save_user_data()
 
     await callback.answer()
 
-def settings_menu(user):
-
-    ai_filter = user.config["ai_filter"]
-
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="✅ AI filter enabled" if ai_filter else "❌ AI filter disabled",
-                    callback_data="turn_AI_filter"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="Back",
-                    callback_data="main_menu"
-                )
-            ]
-        ]
-    )
-
 @dp.callback_query(F.data == "settings")
 async def settings(callback: CallbackQuery):
 
-    user = User(callback.from_user.id)
+    user = get_user(callback.from_user.id)
 
     await callback.message.edit_text(
         "Settings",
-        reply_markup=settings_menu(user)
+        reply_markup=keyboards.settings_menu(user)
     )
 
     await callback.answer()
 
-# ===== Start =====
-
 @dp.message(F.text == "/start")
 async def start(message: Message):
 
+    user = get_user(message.from_user.id)
+
+    status = f"⭐ Premium Status: {'🟢 Active' if user.sub_manager.is_premium() else '🔴 Inactive'}\n"
+    exp = f"⏳ Expires in: {user.sub_manager.get_sub_expire_str()}\n" if user.sub_manager.is_premium() else " "  
+
     await message.answer(
+        f"{status}"
+        f"{exp}"
         "Choose action:",
-        reply_markup=main_menu()
+        reply_markup=keyboards.main_menu()
     )
 
-# ===== Open Feed =====
+@dp.callback_query(F.data.startswith("to_feed"))
+async def open_feed(callback: CallbackQuery, like_this_post=None, retries=3):
 
-@dp.callback_query(F.data.startswith("feed"))
-async def open_feed(callback: CallbackQuery):
+    user: User = get_user(callback.from_user.id)
 
-    user = User(callback.from_user.id)
+    if not await check_limit(callback, user):
+        return
 
-    data = callback.data
-    if ":" in data:
-        post_id = data.split(":")[1]
+    loading_msg = await callback.message.answer("🔄 Loading...")
 
-        post = user.posts_cache.get(post_id)
+    post = await user.get_next_post(loading_msg=loading_msg, like_this=like_this_post)
 
-        if post:
-            user.skip_post(post)
+    await loading_msg.delete()
 
-    post = user.next_post()
     if post == None:
         return
 
@@ -163,23 +113,52 @@ async def open_feed(callback: CallbackQuery):
 
     formatted_tags = " ".join(
         f"#{tag}"
-        for tag in post["tags"].split()[:20]
+        for tag in post["tags"][:20]
     )
-
-    await callback.message.answer_photo(
-        photo=image_url,
-        caption= f"Score: {post['score']}\nTags: {formatted_tags}",
-        reply_markup=feed_keyboard(str(post["id"]))
-    )
+    try:
+        await callback.message.answer_photo(
+            photo=image_url,
+            caption= f"Score: {post['score']}\nTags: {formatted_tags}",
+            reply_markup=keyboards.feed_keyboard(
+                str(post["id"]), 
+                user.sub_manager.is_premium()
+            )
+        )
+    except (TelegramNetworkError, TelegramServerError, TelegramRetryAfter) as e:
+        print(f"NetworkError for post {post['id']}: {e}")
+        while retries > 0:
+            try:
+                print(f"Retry load post: {post['id']}")
+                delay = 2 ** retries
+                await asyncio.sleep(delay)
+                await callback.message.answer_photo(
+                    photo=image_url,
+                    caption= f"Score: {post['score']}\nTags: {formatted_tags}",
+                    reply_markup=keyboards.feed_keyboard(
+                        str(post["id"]), 
+                        user.sub_manager.is_premium()
+                    )
+                )
+                await callback.answer()
+                return
+            except (TelegramNetworkError, TelegramServerError, TelegramRetryAfter):
+                retries -= 1
+    except TelegramBadRequest as e:
+        print(f"Bad request for post {post['id']}: {e}")
+        if (retries > 0):
+            print(f"Try to find any post...")
+            await open_feed(callback, like_this_post, retries - 1)
+            return
 
     await callback.answer()
-
-# ===== Like =====
 
 @dp.callback_query(F.data.startswith("like:"))
 async def like_post(callback: CallbackQuery):
 
-    user = User(callback.from_user.id)
+    user = get_user(callback.from_user.id)
+
+    if not await check_limit(callback, user):
+        return
 
     isLiked = int(callback.data.split(":")[1])
     if isLiked:
@@ -190,7 +169,11 @@ async def like_post(callback: CallbackQuery):
     print(post_id)
 
     await callback.message.edit_reply_markup(
-        reply_markup=feed_keyboard(post_id, liked=True)
+        reply_markup=keyboards.feed_keyboard(
+            post_id, 
+            user.sub_manager.is_premium(), 
+            liked=True
+        )
     )
 
     post = user.posts_cache.get(post_id)
@@ -198,10 +181,15 @@ async def like_post(callback: CallbackQuery):
 
     await callback.answer("Added to favorites")
 
+    await open_feed(callback)
+
 @dp.callback_query(F.data.startswith("dislike:"))
 async def dislike_post_ui(callback: CallbackQuery):
 
-    user = User(callback.from_user.id)
+    user = get_user(callback.from_user.id)
+
+    if not await check_limit(callback, user):
+        return
 
     isDisliked = int(callback.data.split(":")[1])
     if isDisliked:
@@ -212,7 +200,11 @@ async def dislike_post_ui(callback: CallbackQuery):
     print("disliked: ", post_id)
 
     await callback.message.edit_reply_markup(
-        reply_markup=feed_keyboard(post_id, disliked=True)
+        reply_markup=keyboards.feed_keyboard(
+            post_id, 
+            user.sub_manager.is_premium(),
+            disliked=True
+        )
     )
 
     post = user.posts_cache.get(post_id)
@@ -220,10 +212,153 @@ async def dislike_post_ui(callback: CallbackQuery):
 
     await callback.answer("Less like this")
 
-# ===== Main =====
+    await open_feed(callback)
+
+@dp.callback_query(F.data.startswith("skip:"))
+async def skip_post(callback: CallbackQuery):
+
+    user = get_user(callback.from_user.id)
+
+    if not await check_limit(callback, user):
+        return
+
+    data = callback.data
+
+    post_id = data.split(":")[1]
+    post = user.posts_cache.get(post_id)
+    if post:
+        user.skip_post(post)
+
+    await callback.answer()
+
+    await open_feed(callback)
+
+@dp.callback_query(F.data.startswith("like_this:"))
+async def find_post_like_this(callback: CallbackQuery):
+
+    user = get_user(callback.from_user.id)
+
+    post_id = callback.data.split(":")[1]
+    post = user.posts_cache.get(post_id)
+
+    if user.sub_manager.is_premium():
+        await open_feed(callback, post)
+    else:
+        await premium_promotion(callback)
+
+async def check_limit(callback: CallbackQuery, user: User):
+    if user.sub_manager.can_view_post():
+        await callback.answer()
+        return True
+
+    await callback.message.answer(
+        "🚫 Daily free limit reached.\n\n"
+        "You've used all free posts available today.\n\n"
+        "⭐ Premium unlocks:\n"
+        "- Better post ranking\n"
+        "- Faster discovery of new content\n"
+        "- No daily limits\n"
+        "- Support for the author\n\n"
+        "Choose a plan:",
+        reply_markup=keyboards.premium_keyboard()
+    )
+
+    await callback.answer()
+
+    return False
+
+@dp.callback_query(F.data == "premium_promotion")
+async def premium_promotion(callback: CallbackQuery):
+    await callback.message.answer(
+        "⭐ Premium unlocks:\n"
+        "- Unlimited feed\n"
+        "- AI image recommendations (CLIP)\n"
+        "- Better post ranking\n"
+        "- Faster discovery of new content\n"
+        "- No daily limits\n"
+        "- Support for the author\n\n"
+        "Choose a plan:",
+        reply_markup=keyboards.premium_keyboard()
+    )
+
+@dp.callback_query(F.data == "feedback")
+async def feedback_ui(callback: CallbackQuery):
+    await callback.message.answer(
+        "👋 About the author (LincolnCox29)\n\n"
+        "Thanks for using my tg bot!\n\n"
+        "If you have suggestions, bug reports, partnership offers, or just want to get in touch, use the links below. ↓",
+        reply_markup=keyboards.feedback_menu()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("buy_premium"))
+async def buy_premium(callback: CallbackQuery):
+
+    data = callback.data
+    price = data.split(":")[1]
+    duration = data.split(":")[2]
+
+    await bot.send_invoice(
+        chat_id=callback.from_user.id,
+        title="Premium Subscription",
+        description=f"{duration} days of Premium access",
+        payload=f"premium_{duration}",
+        currency="XTR",
+        prices=[
+            LabeledPrice(
+                label=f"Premium {duration} days",
+                amount=price
+            )
+        ]
+    )
+
+    await callback.answer()
+
+@dp.pre_checkout_query()
+async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
+    await bot.answer_pre_checkout_query(
+        pre_checkout_query.id,
+        ok=True
+    )
+
+@dp.message(F.successful_payment)
+async def successful_payment(message: Message):
+
+    user = get_user(message.from_user.id)
+
+    payment = message.successful_payment
+
+    days = int(payment.invoice_payload.split("_")[1])
+
+    user.sub_manager.add_subscription_days(days)
+
+    user.save_user_data()
+
+    await message.answer(
+        f"✅ Premium activated for {days} days!\n\n"
+        "Choose action:",
+        reply_markup=keyboards.main_menu()
+    )
+
+def machine_configuration():
+    print("Torch:", torch.__version__)
+    print("CUDA:", torch.version.cuda)
+    print("Available:", torch.cuda.is_available())
+    if torch.cuda.is_available():
+        print("GPU:", torch.cuda.get_device_name(0))
 
 async def main():
-    await dp.start_polling(bot)
+    enable_log_filter()
+    machine_configuration()
+    await R34_CLIENT.start()
+    await POSTS_POOL.init_pool()
+    asyncio.create_task(
+        POSTS_POOL.refresh_pool_loop()
+    )
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await R34_CLIENT.close()
 
 if __name__ == "__main__":
     asyncio.run(main())

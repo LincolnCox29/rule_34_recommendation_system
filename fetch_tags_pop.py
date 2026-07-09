@@ -1,8 +1,7 @@
 import requests
-import xml.etree.ElementTree as ET
+from env import R34_API_KEY, R34_USER_ID
 import json
 import time
-import os
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -14,7 +13,11 @@ def normalize_tag(tag):
         .rstrip(",")
     )
 
-def tags_pop_to_json(tags):
+def tags_pop_to_json(tags: dict):
+
+    for key in tags.keys():
+        if tags[key] == 1:
+            del tags[key]
 
     sorted_tags = dict(
         sorted(
@@ -46,8 +49,8 @@ def get_posts(pid):
         "json": 1,
         "limit": 100,
         "pid": pid,
-        "api_key": os.getenv("R34_API_KEY"),
-        "user_id": os.getenv("R34_USER_ID")
+        "api_key": R34_API_KEY,
+        "user_id": R34_USER_ID
     }
 
     headers = {

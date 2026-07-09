@@ -1,31 +1,56 @@
 import json
-import math
+from env import try_getenv
 import os
 import random
-import requests
 from pathlib import Path
-from dotenv import load_dotenv
+import shutil
+import torch
+from subscription_manager import Subscription_manager
+from posts_pool import POSTS_POOL
+from rule_34_client import R34_CLIENT
+from clip import CLIP
+import heapq
 
-load_dotenv()
-R34_API_KEY = os.getenv("R34_API_KEY")
-R34_USER_ID = os.getenv("R34_USER_ID")
+AI_TAGS = [
+    "ai_generated",
+    "stable diffusion",
+    "ai",
+    "ai assisted"
+]
 
-TAGS_POP = None
-def load_tags_pop():
-    global TAGS_POP
-    print(os.path.abspath("tags_pop.json"))
-    try:
-        with open("tags_pop.json", "r", encoding="utf-8") as file:
-            TAGS_POP = json.load(file)
-    except Exception as e:
-        print("tags JSON loading exception: ", e)
-load_tags_pop()
+NEXT_POST_SUB_POST_CNT = 10000
+NEXT_POST_SUB_CLIP_CNT = 1000
+
+NEXT_POST_POST_CNT = 5000
+NEXT_POST_CLIP_CNT = 500
+
+DISLIKE_WEIGHT = 8
+
+LIKED_POSTS_MEM = 30
+DISLIKED_POSTS_MEM = 15
+
+#TAGS_POP = None
+#def load_tags_pop():
+#    global TAGS_POP
+#    print("Tags pop json path: ", os.path.abspath("tags_pop.json"))
+#    try:
+#        with open("tags_pop.json", "r", encoding="utf-8") as file:
+#            TAGS_POP = json.load(file)
+#    except Exception as e:
+#        print("tags JSON loading exception: ", e)
+#        print("Trying to load tags pop")
+#load_tags_pop()
 
 class User:
 
-    def __init__(self, id):
+    def __init__(self, id, r34_client):
+        self.r34_client = r34_client
         self.id = id
-        self.json_path = f"users\\{self.id}.json"
+        self.posts_cache = {}
+        self.sub_manager = Subscription_manager(id)
+        self.json_path = Path("users") / f"{self.id}.json"
+        self.tmp_path = f"{self.json_path}.tmp"
+        self.bak_path = f"{self.json_path}.bak"
         path = Path(self.json_path)
         if path.is_file():
             self.__load_json()
@@ -34,46 +59,120 @@ class User:
 
     def __create_json(self):
         self.reactions = {}
-        self.posts_cache = {}
+        self.viewed_post_ids = []
+        self.liked_posts = []
+        self.disliked_posts = []
+        self.reaction_count = 0
+
         self.config = {
             "ai_filter": False
         }
+
         self.save_user_data()
 
     def __load_json(self):
-        with open(self.json_path, "r", encoding="utf-8") as file:
-            data = json.load(file)
+        try:
+            with open(self.json_path, "r", encoding="utf-8") as file:
+                data = json.load(file)
+
+        except Exception as e:
+            print(f"JSON with user id {self.id} was corrupted. Load backup: {e}")
+
+            try:
+                shutil.copy2(self.bak_path, self.json_path)
+                self.__load_json()
+            except Exception as e:
+                print(f"Backup with user id {self.id} also corrupted: {e}")
+                self.__create_json()
+            return
+
         self.reactions = data["reactions"]
-        self.posts_cache = data["posts_cache"]
+        self.viewed_post_ids = data.get("viewed_post_ids", [])
         self.config = data["config"]
+        self.reaction_count = data["reaction_count"]
+
+        self.liked_posts = data.get("liked_posts", [])
+        self.disliked_posts = data.get("disliked_posts", [])
+
+        for post in self.liked_posts + self.disliked_posts:   
+            if "embedding" in post:
+                post["embedding"] = torch.tensor(
+                    post["embedding"],
+                    dtype=torch.float32,
+                    device=CLIP.device
+                )
+
+        self.sub_manager.load(data)
         
     def save_user_data(self):
+
+        def posts_to_snapshots(posts):
+            
+            snapshots = []
+
+            for post in posts:
+
+                snapshot = self.__make_post_snapshot(post)
+
+                if "embedding" in snapshot:
+                    snapshot["embedding"] = (
+                        snapshot["embedding"]
+                        .cpu()
+                        .tolist()
+                    )
+
+                snapshots.append(snapshot)
+            
+            return snapshots
+
+        liked_posts = posts_to_snapshots(self.liked_posts)
+        disliked_posts = posts_to_snapshots(self.disliked_posts)
+
         data = {
             "reactions": self.reactions,
-            "posts_cache": self.posts_cache,
-            "config": self.config
+            "config": self.config,
+            "reaction_count": self.reaction_count,
+            "viewed_post_ids": self.viewed_post_ids,
+            "liked_posts": liked_posts,
+            "disliked_posts": disliked_posts 
         }
-        with open(self.json_path, "w", encoding="utf-8") as file:
-            json.dump(
-                data,
-                file,
-                ensure_ascii=False,
-                indent=4
-            )
+
+        data.update(self.sub_manager.get_data_for_save())
+
+        try:
+
+            if os.path.exists(self.json_path):
+                shutil.copy2(self.json_path, self.bak_path)
+
+            with open(self.tmp_path, "w", encoding="utf-8") as file:
+                json.dump(
+                    data,
+                    file,
+                    ensure_ascii=False,
+                    indent=4
+                )
+
+        except Exception:
+            print(f"Save denied to corrupted json with user id {self.id}")
+            return
+
+        os.replace(self.tmp_path, self.json_path)
 
     def update_posts_cache(self, post):
         self.posts_cache[str(post["id"])] = post
+        self.viewed_post_ids.append(int(post["id"]))
 
         if len(self.posts_cache) > 200:
             oldest_key = next(iter(self.posts_cache))
             del self.posts_cache[oldest_key]
 
+        if len(self.viewed_post_ids) > 1000:
+            self.viewed_post_ids.pop(0)
+
         self.save_user_data()
 
     def __reaction(self, type, post):
-        tags = post["tags"].split()
-
-        self.print_tags_weight(max=-3)
+        tags = post["tags"]
 
         for tag in tags:
             if tag not in self.reactions:
@@ -83,245 +182,165 @@ class User:
                     "skip": 0
                 }
             self.reactions[tag][type] += 1
-
-        self.save_user_data()
+            
+        if type != "skip":
+            self.reaction_count += 1
 
     def dislike_post(self, post):
         self.__reaction("dis", post)
 
+        self.disliked_posts.append(
+            self.__make_post_snapshot(post)
+        )
+
+        while len(self.disliked_posts) > DISLIKED_POSTS_MEM:
+            self.disliked_posts.pop(0)
+
+        self.save_user_data()
+
     def like_post(self, post):
+
         self.__reaction("like", post)
+
+        self.liked_posts.append(
+            self.__make_post_snapshot(post)
+        )
+
+        while len(self.liked_posts) > LIKED_POSTS_MEM:
+            self.liked_posts.pop(0)
+
+        self.save_user_data()
 
     def skip_post(self, post):
         self.__reaction("skip", post)
+        self.save_user_data()
 
-    def __tag_weight(self, tag):
+    def __make_post_snapshot(self, post):
 
-        stats = self.reactions.get(tag)
+        snapshot = {
+            "preview_url": post["preview_url"],
+            "sample_url": post["sample_url"],
+            "file_url": post["file_url"],
+            "id": post["id"],
+            "score": post["score"],
+            "tags": post["tags"],
+        }
 
-        if not stats:
-            return 0
+        if "embedding" in post:
+            snapshot["embedding"] = post["embedding"].clone()
 
-        likes = stats["like"]
-        dislikes = stats["dis"]
-        skips = stats["skip"]
-
-        seen = likes + dislikes + skips
-
-        if seen == 0:
-            return 0
-
-        preference = (
-            likes
-            - dislikes * 2
-            - skips * 0.15
-        ) / seen
-
-        confidence = min(1.0, seen / 10)
-
-        pop = TAGS_POP.get(tag, 100)
-
-        rarity = 1 / math.log10(pop + 10)
-
-        rarity = max(0.15, rarity)
-
-        weight = preference * confidence * rarity * 20
-
-        return weight
+        return snapshot
     
-    def __score_post(self, post):
+    async def get_next_post(self, like_this=None, loading_msg=None, current_loading_text=""):
 
-        is_exploration_mod = True if random.random() < 0.15 else False
+        async def update_msg(text):
+            nonlocal current_loading_text
+            if (loading_msg is not None and current_loading_text != text):
+                current_loading_text = text
+                await loading_msg.edit_text(current_loading_text)
 
-        tags = post["tags"].split()
-        post_score = post["score"]
+        await update_msg("🔄 Searching...")
 
-        score = 0
-
-        known = 0
-        unknown = 0
-
-        for tag in tags:
-
-            if tag in self.reactions:
-                known += 1
-            else:
-                unknown += 1
-
-            w = self.__tag_weight(tag)
-
-            score += w
-
-        score /= max(1, len(tags) ** 0.5)
-
-        quality_factor = min(
-            1.5,
-            1 + math.log10(post_score + 10) * 0.15
+        posts = POSTS_POOL.get_random_post(
+            NEXT_POST_SUB_POST_CNT if self.sub_manager.is_premium() else NEXT_POST_POST_CNT,
+            excluded_tags= AI_TAGS if self.config["ai_filter"] else None
         )
 
-        score *= quality_factor
-
-        tag_factor = min(
-            1.0,
-            len(tags) / 20
-        )
-
-        score *= tag_factor
-
-        if random.random() < 0.15:
-            score += unknown * 0.25
-
-        if is_exploration_mod:
-            unknown_ratio = unknown / len(tags)
-            score += unknown_ratio * 2
-
-        return score
-    
-    def __get_best_tags(self, limit=20):
-
-        scored = []
-
-        for tag in self.reactions:
-
-            weight = self.__tag_weight(tag)
-
-            if weight > 0:
-                scored.append((tag, weight))
-
-        scored.sort(
-            key=lambda x: x[1],
-            reverse=True
-        )
-
-        return scored[:limit]
-    
-    def __build_query(self):
-
-        query = []
-
-        best_tags = self.__get_best_tags()
-
-        if best_tags:
-
-            tags = [tag for tag, _ in best_tags]
-
-            weights = [weight for _, weight in best_tags]
-
-            positive_count = random.choices(
-                [1, 2],
-                weights=[80, 20]
+        if like_this == None:
+            like_this = random.choices(
+                self.liked_posts,
+                weights=range(1, len(self.liked_posts) + 1),
+                k=1
             )[0]
 
-            selected = random.choices(
-                tags,
-                weights=weights,
-                k=positive_count
-            )
+        try:
+            await update_msg("🔄 Ranking posts...")
 
-            query.extend(set(selected))
+            ref_tags = set(like_this["tags"])
+            viewed_post_ids_set = set(self.viewed_post_ids)
+            ref_embedding = CLIP.get_post_tensor(like_this).squeeze(0)
 
-        disliked = []
+            await update_msg("🔄 Similarity calculation...")
 
-        for tag in self.reactions:
+            for post in posts:
 
-            weight = self.__tag_weight(tag)
+                likeness = 0
 
-            if weight < -10:
-                disliked.append((tag, weight))
-
-        disliked.sort(key=lambda x: x[1])
-
-        query.extend(
-            f"-{tag}"
-            for tag, _ in disliked[:10]
-        )
-
-        if self.config["ai_filter"]:
-            query.extend([
-                "-ai_generated",
-                "-stable_diffusion",
-                "-midjourney",
-                "-novelai",
-                "-ia_generated"
-            ])
-
-        return " ".join(query)
-    
-    def next_post(self):
-
-        for i in range(5):
-
-            query = self.__build_query()
-            print("QUERY:", query)
-
-            pid = random.randint(0, 200)
-
-            params = {
-                "page": "dapi",
-                "s": "post",
-                "q": "index",
-                "json": 1,
-                "limit": 100,
-                "pid": 0,
-                "tags": query,
-                "api_key": R34_API_KEY,
-                "user_id": R34_USER_ID
-            }
-
-            headers = {
-                "User-Agent": "Mozilla/5.0"
-            }
-
-            try:
-
-                response = requests.get(
-                    "https://api.rule34.xxx/index.php",
-                    params=params,
-                    headers=headers,
-                    timeout=10
-                )
-
-                posts = response.json()
-                
-                print("STATUS:", response.status_code)
-                print("TYPE:", type(posts))
-                print("TEXT:", response.text[:500])
-
-                if not isinstance(posts, list):
-                    raise TypeError("Bad API response")
-
-                if not posts:
+                if int(post["id"]) in viewed_post_ids_set:
+                    post["likeness"] = likeness
                     continue
 
-                best_post = None
-                for post in posts:
-                    if str(post["id"]) in self.posts_cache:
-                        continue
+                for tag in post["tags"]:
+                    if tag in ref_tags:
+                        likeness += 1
+                    else:
+                        likeness -= 0.1
+                post["likeness"] = likeness
 
-                    score = self.__score_post(post)
+            top_posts = heapq.nlargest(
+                NEXT_POST_SUB_CLIP_CNT if self.sub_manager.is_premium() else NEXT_POST_CLIP_CNT,
+                posts,
+                key=lambda p: p["likeness"]
+            )
 
-                    post["user_score"] = score
+            await update_msg("🔄 Load embeddings...")
 
-                    if best_post == None or score > best_post["user_score"]:
-                        best_post = post
-                return best_post
+            embeddings = torch.stack([
+                CLIP.get_post_tensor(post).squeeze(0)
+                for post in top_posts
+            ])
+            sims_like = embeddings @ ref_embedding
 
-            except Exception as e:
-                print(e)
-                continue
+            disliked_embeddings = torch.stack([
+                post["embedding"]
+                for post in self.disliked_posts
+            ])
+            sims_dislike = (embeddings @ disliked_embeddings.T).max(dim=1).values
+
+            await update_msg("🔄 Finding best post...")
+            for i, post in enumerate(top_posts):
+
+                tag_score = post["likeness"]
+                sims_like_score = sims_like[i].item()
+                sims_dislike_score = sims_dislike[i].item()
+
+                post["likeness"] = (
+                    tag_score * 0.6 +
+                    sims_like_score * 8 -
+                    sims_dislike_score * 8
+                )
+
+            top_20 = heapq.nlargest(
+                20,
+                top_posts,
+                key=lambda p: p["likeness"]
+            )
+            top_20.sort(key=lambda p: p["likeness"], reverse=True)
+
+            weights = [
+                100,70,50,35,25,
+                18,14,11,9,8,
+                7,6,5,4,3,
+                2,2,1,1,1
+            ]
+
+            return random.choices(
+                top_20,
+                weights=weights,
+                k=1
+            )[0]
+        
+        except Exception as e:
+            import traceback
+            await update_msg("❌ Couldn't find post!")
+            traceback.print_exc()
 
         return None
-    
-    def print_tags_weight(self, min = -999, max = 999):
-        weights = {}
 
-        for tag in self.reactions.keys():
-            w = self.__tag_weight(tag)
-            if w >= min or w <= max:
-                weights[tag] = w
+USERS = {}
 
-        sorted_by_val = dict(sorted(weights.items(), key=lambda x: x[1]))
-        
-        for tag in sorted_by_val.keys():
-            print(f"Weight of the \"{tag}\": ", weights[tag])
-        
+def get_user(user_id):
+    if user_id not in USERS:
+        USERS[user_id] = User(user_id, R34_CLIENT)
+
+    return USERS[user_id]
