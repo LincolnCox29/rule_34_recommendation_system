@@ -9,8 +9,7 @@ class Subscription_manager:
 
     def __init__(self, id):
         self.id = id
-        if ENDLESS_SUBS is not list:
-            ENDLESS_SUBS = [] if ENDLESS_SUBS == None else ENDLESS_SUBS.split(",")
+        self.endless_subs = [] if ENDLESS_SUBS == None else ENDLESS_SUBS.split(",")
         self.subscription_end = 0.0
         self.today_posts_counter = 0
         self.today_posts_counter_reload_time = 0
@@ -30,7 +29,7 @@ class Subscription_manager:
     def is_premium(self) -> bool:
         return (
             (time.time() < self.subscription_end) or
-            (str(self.id) in ENDLESS_SUBS)
+            (str(self.id) in self.endless_subs)
         )
     
     def add_subscription_days(self, days: int):
