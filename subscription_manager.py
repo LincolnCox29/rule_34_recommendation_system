@@ -4,7 +4,6 @@ from env import ENDLESS_SUBS
 
 FREE_POSTS_PER_DAY = 30
 DAY = 86400
-ENDLESS_SUBS = []
 
 class Subscription_manager:
 
